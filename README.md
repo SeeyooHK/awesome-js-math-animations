@@ -1,6 +1,6 @@
-# awesome-p5-math-animations
+# awesome-js-math-animations
 
-This repository contains a collection of generative art and animations created using HTML, CSS, and the p5.js library. The sketches feature beautiful, code-driven visual effects of math functions running directly in the browser.
+This repository contains a collection of generative art and animations created using HTML, CSS, and the js libraries, such as vanilla js,  p5.js, etc. The sketches feature beautiful, code-driven visual effects of math functions running directly in the browser.
 
 ## Included HTML Files and Credits
 
@@ -12,3 +12,4 @@ This repository contains a collection of generative art and animations created u
   * *Credit:* [@chuyouqi](https://x.com/chuyouqi)
 * **[chromatic-fish.html](chromatic-fish.html)** - variation of [fish.html](fish.html)
   * *Credit:* [@mathelirium](https://x.com/mathelirium)
+* **[infinite-particles](infinite-particles/)** - variations
