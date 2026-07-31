@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Infinite Particle Funnel</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A tiny glowing observer standing at the edge of a monochrome particle abyss"></canvas>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.querySelector("#scene");
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const TAU = Math.PI * 2;
+      const LOOP_MS = 1840;
+      const COUNT = 32000;
+      const particles = new Float32Array(COUNT * 5);
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      let start = performance.now();
+      let pausedAt = null;
+
+      let seed = 0x31f2ac17;
+      const random = () => {
+        seed ^= seed << 13;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;
+        return (seed >>> 0) / 4294967296;
+      };
+
+      for (let i = 0; i < particles.length; i += 5) {
+        particles[i] = random();                    // depth phase
+        particles[i + 1] = random() * TAU;          // entry direction
+        particles[i + 2] = random();                // tube thickness
+        particles[i + 3] = random();                // brightness
+        particles[i + 4] = random() * TAU;          // local distortion
+      }
+
+      const fract = value => value - Math.floor(value);
+      const smoothstep = (a, b, value) => {
+        const t = Math.max(0, Math.min(1, (value - a) / (b - a)));
+        return t * t * (3 - 2 * t);
+      };
+
+      function resize() {
+        dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      function point(phase, angle, thickness, distortion, time, out) {
+        const q = fract(phase + time);
+        const z = 0.13 + 2.52 * Math.pow(1 - q, 1.34);
+        const ripple =
+          Math.sin(angle * 5 + distortion) * 0.065 +
+          Math.sin(angle * 11 + distortion * 2) * 0.025;
+        const radius = 0.82 + (thickness - 0.5) * 0.34 + ripple;
+        const twist = angle + 0.018 * Math.sin(angle * 7 + distortion);
+        const scale = 0.13 * radius / z;
+        const cx = width * 0.5;
+        const cy = height * 0.875;
+
+        out[0] = cx + Math.cos(twist) * width * scale;
+        out[1] = cy + Math.sin(twist) * height * scale * 0.91;
+        out[2] = q;
+        out[3] = twist;
+      }
+
+      function drawWatcher(time) {
+        const unit = Math.min(width, height);
+        const pulse = 0.94 + Math.sin(time * TAU) * 0.06;
+        const figureHeight = unit * 0.024;
+        const cx = width * 0.5;
+        const feetY = height * 0.892;
+        const shoulderY = feetY - figureHeight * 0.64;
+        const hipY = feetY - figureHeight * 0.34;
+        const glowRadius = figureHeight * 2.8;
+
+        ctx.save();
+        ctx.globalAlpha = pulse;
+
+        const halo = ctx.createRadialGradient(
+          cx, feetY - figureHeight * 0.46, 0,
+          cx, feetY - figureHeight * 0.46, glowRadius
+        );
+        halo.addColorStop(0, "rgba(255,255,255,.55)");
+        halo.addColorStop(0.16, "rgba(235,240,244,.18)");
+        halo.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = halo;
+        ctx.fillRect(
+          cx - glowRadius, feetY - figureHeight * 0.46 - glowRadius,
+          glowRadius * 2, glowRadius * 2
+        );
+
+        ctx.strokeStyle = "rgba(242,246,249,.82)";
+        ctx.fillStyle = "rgba(255,255,255,.9)";
+        ctx.lineWidth = Math.max(0.7, figureHeight * 0.075);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.shadowColor = "rgba(255,255,255,.62)";
+        ctx.shadowBlur = Math.max(2.5, figureHeight * 0.3);
+
+        // A soft, back-facing suggestion of a head.
+        ctx.beginPath();
+        ctx.ellipse(
+          cx, feetY - figureHeight * 0.82,
+          figureHeight * 0.075, figureHeight * 0.095,
+          0, 0, TAU
+        );
+        ctx.fill();
+
+        // Shoulders, body, and arms merge into an indistinct back-facing shape.
+        ctx.beginPath();
+        ctx.moveTo(cx - figureHeight * 0.12, shoulderY);
+        ctx.quadraticCurveTo(
+          cx, shoulderY - figureHeight * 0.035,
+          cx + figureHeight * 0.12, shoulderY
+        );
+        ctx.lineTo(cx + figureHeight * 0.07, hipY);
+        ctx.lineTo(cx - figureHeight * 0.07, hipY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Nearly merged legs keep the figure vague and completely still.
+        ctx.beginPath();
+        ctx.moveTo(cx - figureHeight * 0.028, hipY);
+        ctx.lineTo(cx - figureHeight * 0.028, feetY);
+        ctx.moveTo(cx + figureHeight * 0.028, hipY);
+        ctx.lineTo(cx + figureHeight * 0.028, feetY);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function render(now) {
+        const elapsed = pausedAt === null ? now - start : pausedAt - start;
+        const time = (elapsed % LOOP_MS) / LOOP_MS;
+        const current = [0, 0, 0, 0];
+        const previous = [0, 0, 0, 0];
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, width, height);
+        ctx.lineCap = "round";
+
+        for (let i = 0; i < particles.length; i += 5) {
+          const phase = particles[i];
+          const angle = particles[i + 1];
+          const thickness = particles[i + 2];
+          const brightness = particles[i + 3];
+          const distortion = particles[i + 4];
+
+          point(phase, angle, thickness, distortion, time, current);
+          if (current[0] < -12 || current[0] > width + 12 ||
+              current[1] < -12 || current[1] > height + 12) continue;
+
+          const q = current[2];
+          const fade = smoothstep(0, 0.09, q) * (1 - smoothstep(0.88, 1, q));
+          const topDistance = Math.abs(
+            Math.atan2(Math.sin(current[3] + Math.PI / 2), Math.cos(current[3] + Math.PI / 2))
+          );
+          const funnel = 0.055 + 0.945 * smoothstep(0.11, 0.32, topDistance);
+          const alpha = fade * funnel * (0.13 + brightness * 0.58);
+          if (alpha < 0.018) continue;
+
+          point(phase - 0.0045, angle, thickness, distortion, time, previous);
+          const size = 0.28 + q * q * (0.72 + brightness * 1.72);
+          const tone = Math.round(158 + brightness * 97);
+
+          ctx.strokeStyle = `rgba(${tone},${tone},${tone},${alpha})`;
+          ctx.lineWidth = size;
+          ctx.beginPath();
+          ctx.moveTo(previous[0], previous[1]);
+          ctx.lineTo(current[0], current[1]);
+          ctx.stroke();
+        }
+
+        drawWatcher(time);
+        requestAnimationFrame(render);
+      }
+
+      window.addEventListener("resize", resize);
+      window.addEventListener("keydown", event => {
+        if (event.code !== "Space") return;
+        event.preventDefault();
+        if (pausedAt === null) {
+          pausedAt = performance.now();
+        } else {
+          start += performance.now() - pausedAt;
+          pausedAt = null;
+        }
+      });
+
+      resize();
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>

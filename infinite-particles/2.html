@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Infinite Particle Funnel</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="An infinite monochrome particle tunnel"></canvas>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.querySelector("#scene");
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const TAU = Math.PI * 2;
+      const LOOP_MS = 1840;
+      const COUNT = 14500;
+      const particles = new Float32Array(COUNT * 5);
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      let start = performance.now();
+      let pausedAt = null;
+
+      let seed = 0x31f2ac17;
+      const random = () => {
+        seed ^= seed << 13;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;
+        return (seed >>> 0) / 4294967296;
+      };
+
+      for (let i = 0; i < particles.length; i += 5) {
+        particles[i] = random();                    // depth phase
+        particles[i + 1] = random() * TAU;          // angle
+        particles[i + 2] = random();                // tube thickness
+        particles[i + 3] = random();                // brightness
+        particles[i + 4] = random() * TAU;          // local distortion
+      }
+
+      const fract = value => value - Math.floor(value);
+      const smoothstep = (a, b, value) => {
+        const t = Math.max(0, Math.min(1, (value - a) / (b - a)));
+        return t * t * (3 - 2 * t);
+      };
+
+      function resize() {
+        dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      function point(phase, angle, thickness, distortion, time, out) {
+        const q = fract(phase + time);
+        const z = 0.13 + 2.52 * Math.pow(1 - q, 1.34);
+        const ripple =
+          Math.sin(angle * 5 + q * TAU * 1.8 + distortion) * 0.075 +
+          Math.sin(angle * 11 - q * TAU + distortion * 2) * 0.025;
+        const radius = 0.82 + (thickness - 0.5) * 0.34 + ripple;
+        const twist = angle + 0.075 * Math.sin(q * TAU + distortion);
+        const scale = 0.205 * radius / z;
+        const cx = width * 0.5;
+        const cy = height * 0.875;
+
+        out[0] = cx + Math.cos(twist) * width * scale;
+        out[1] = cy + Math.sin(twist) * height * scale * 0.91;
+        out[2] = q;
+        out[3] = twist;
+      }
+
+      function drawGlow() {
+        const cx = width * 0.5;
+        const cy = height * 0.875;
+        const unit = Math.min(width, height);
+
+        const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, unit * 0.085);
+        halo.addColorStop(0, "rgba(255,255,255,.62)");
+        halo.addColorStop(0.08, "rgba(235,239,243,.22)");
+        halo.addColorStop(0.35, "rgba(190,198,205,.06)");
+        halo.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = halo;
+        ctx.fillRect(cx - unit * 0.09, cy - unit * 0.09, unit * 0.18, unit * 0.18);
+
+        const flame = ctx.createLinearGradient(cx, cy - unit * 0.022, cx, cy + unit * 0.014);
+        flame.addColorStop(0, "rgba(255,255,255,0)");
+        flame.addColorStop(0.38, "rgba(255,255,255,.98)");
+        flame.addColorStop(1, "rgba(205,212,219,.15)");
+        ctx.fillStyle = flame;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy - unit * 0.005, unit * 0.006, unit * 0.025, 0, 0, TAU);
+        ctx.fill();
+
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(cx, cy - unit * 0.009, Math.max(1.2, unit * 0.0026), 0, TAU);
+        ctx.fill();
+      }
+
+      function render(now) {
+        const elapsed = pausedAt === null ? now - start : pausedAt - start;
+        const time = (elapsed % LOOP_MS) / LOOP_MS;
+        const current = [0, 0, 0, 0];
+        const previous = [0, 0, 0, 0];
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, width, height);
+        ctx.lineCap = "round";
+
+        for (let i = 0; i < particles.length; i += 5) {
+          const phase = particles[i];
+          const angle = particles[i + 1];
+          const thickness = particles[i + 2];
+          const brightness = particles[i + 3];
+          const distortion = particles[i + 4];
+
+          point(phase, angle, thickness, distortion, time, current);
+          if (current[0] < -12 || current[0] > width + 12 ||
+              current[1] < -12 || current[1] > height + 12) continue;
+
+          const q = current[2];
+          const fade = smoothstep(0, 0.09, q) * (1 - smoothstep(0.88, 1, q));
+          const topDistance = Math.abs(
+            Math.atan2(Math.sin(current[3] + Math.PI / 2), Math.cos(current[3] + Math.PI / 2))
+          );
+          const funnel = 0.035 + 0.965 * smoothstep(0.24, 0.5, topDistance);
+          const alpha = fade * funnel * (0.16 + brightness * 0.63);
+          if (alpha < 0.018) continue;
+
+          point(phase - 0.0035, angle, thickness, distortion, time, previous);
+          const size = 0.35 + q * q * (0.7 + brightness * 1.8);
+          const tone = Math.round(158 + brightness * 97);
+
+          ctx.strokeStyle = `rgba(${tone},${tone},${tone},${alpha})`;
+          ctx.lineWidth = size;
+          ctx.beginPath();
+          ctx.moveTo(previous[0], previous[1]);
+          ctx.lineTo(current[0], current[1]);
+          ctx.stroke();
+        }
+
+        drawGlow();
+        requestAnimationFrame(render);
+      }
+
+      window.addEventListener("resize", resize);
+      window.addEventListener("keydown", event => {
+        if (event.code !== "Space") return;
+        event.preventDefault();
+        if (pausedAt === null) {
+          pausedAt = performance.now();
+        } else {
+          start += performance.now() - pausedAt;
+          pausedAt = null;
+        }
+      });
+
+      resize();
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>
