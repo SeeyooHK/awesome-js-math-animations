@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overgrown Field Study</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #747e6b; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+<script type="module">
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js';
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x747e6b);
+  scene.fog = new THREE.Fog(0x747e6b, 11.5, 19);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  document.body.appendChild(renderer.domElement);
+
+  const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.1, 40);
+  camera.position.set(8.9, 7.7, 9.8);
+  camera.lookAt(0, 0.15, 0);
+
+  scene.add(new THREE.HemisphereLight(0xdfe8ca, 0x46503f, 2.1));
+  const sun = new THREE.DirectionalLight(0xf0f0d8, 3.6);
+  sun.position.set(-5, 10, 4);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -7; sun.shadow.camera.right = 7;
+  sun.shadow.camera.top = 6; sun.shadow.camera.bottom = -6;
+  sun.shadow.bias = -0.0008;
+  scene.add(sun);
+
+  const rand = (() => { let s = 918273; return () => ((s = Math.imul(48271, s) | 0) >>> 0) / 4294967296; })();
+  const hash = (x, z) => {
+    const n = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+    return n - Math.floor(n);
+  };
+  const heightAt = (x, z) => 0.09 * Math.sin(x * 1.17) + 0.07 * Math.cos(z * 1.63) + 0.055 * Math.sin(x * 2.8 + z * 2.1);
+  const insideTile = (x, z) => {
+    const nx = Math.abs(x) / 5.15, nz = Math.abs(z) / 3.6;
+    return Math.pow(nx, 5.2) + Math.pow(nz, 5.2) < 1 - (hash(x * .8, z * .8) - .5) * .045;
+  };
+
+  // Soft-edged, subtly undulating ground tile.
+  const groundGeo = new THREE.PlaneGeometry(10.3, 7.2, 78, 54);
+  groundGeo.rotateX(-Math.PI / 2);
+  const gp = groundGeo.attributes.position;
+  const groundColors = [];
+  const soilA = new THREE.Color(0x677f33), soilB = new THREE.Color(0x94a53f);
+  for (let i = 0; i < gp.count; i++) {
+    const x = gp.getX(i), z = gp.getZ(i);
+    gp.setY(i, heightAt(x, z));
+    const c = soilA.clone().lerp(soilB, .25 + .55 * hash(Math.round(x * 3), Math.round(z * 3)));
+    groundColors.push(c.r, c.g, c.b);
+  }
+  groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(groundColors, 3));
+  groundGeo.computeVertexNormals();
+  const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, side: THREE.DoubleSide }));
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Irregular earthy rim peeking through at the tile edge.
+  const rim = new THREE.Mesh(
+    new THREE.BoxGeometry(10.18, .22, 7.06, 12, 1, 10),
+    new THREE.MeshStandardMaterial({ color: 0x65723b, roughness: 1 })
+  );
+  rim.position.y = -.13;
+  rim.scale.set(.99, 1, .99);
+  rim.receiveShadow = true;
+  scene.add(rim);
+
+  // A pair of broken stepping-stone trails.
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9b966a, roughness: 1, flatShading: true });
+  const stoneGeo = new THREE.CylinderGeometry(1, 1, .13, 7);
+  const trails = [
+    t => new THREE.Vector2(-4.35 + t * 7.25, -2.35 + .48 * Math.sin(t * 7.2)),
+    t => new THREE.Vector2(3.65 + .43 * Math.sin(t * 5.4), 2.9 - t * 5.25)
+  ];
+  for (const path of trails) for (let i = 0; i < 9; i++) {
+    const t = (i + .14 * rand()) / 8, p = path(t);
+    const rock = new THREE.Mesh(stoneGeo, stoneMat);
+    rock.scale.set(.36 + rand() * .25, 1, .24 + rand() * .18);
+    rock.position.set(p.x, heightAt(p.x, p.y) + .035, p.y);
+    rock.rotation.y = rand() * Math.PI;
+    rock.receiveShadow = rock.castShadow = true;
+    scene.add(rock);
+  }
+
+  // Thousands of GPU-instanced ribbons make the grass; the vertex shader supplies wind.
+  const bladeCount = 8200;
+  const bladeGeo = new THREE.InstancedBufferGeometry();
+  bladeGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+    -.045,0,0,  .045,0,0,  -.022,1,0,
+     .045,0,0,   .022,1,0,  -.022,1,0
+  ], 3));
+  const offsets = new Float32Array(bladeCount * 3), attrs = new Float32Array(bladeCount * 4);
+  let placed = 0;
+  while (placed < bladeCount) {
+    const x = (rand() - .5) * 10.55, z = (rand() - .5) * 7.45;
+    if (!insideTile(x, z)) continue;
+    offsets[placed*3] = x; offsets[placed*3+1] = heightAt(x,z) + .015; offsets[placed*3+2] = z;
+    attrs[placed*4] = rand() * Math.PI; attrs[placed*4+1] = .23 + Math.pow(rand(), .6) * .7;
+    attrs[placed*4+2] = .65 + rand() * .9; attrs[placed*4+3] = rand(); placed++;
+  }
+  bladeGeo.setAttribute('offset', new THREE.InstancedBufferAttribute(offsets, 3));
+  bladeGeo.setAttribute('data', new THREE.InstancedBufferAttribute(attrs, 4));
+  const bladeMat = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: { time: { value: 0 } },
+    vertexShader: `
+      uniform float time; attribute vec3 offset; attribute vec4 data;
+      varying float vShade; varying float vTip;
+      void main(){
+        float a=data.x, h=data.y, w=data.z; vec3 p=position;
+        p.x*=w; p.y*=h;
+        float tip=p.y/max(h,.001);
+        p.x += (sin(time*1.25 + offset.x*.72 + offset.z*.54)*.10 + cos(time*.73 + offset.z)*.045)*tip*tip;
+        mat2 r=mat2(cos(a),-sin(a),sin(a),cos(a)); p.xz=r*p.xz;
+        vec3 world=p+offset; vTip=tip; vShade=data.w;
+        gl_Position=projectionMatrix*modelViewMatrix*vec4(world,1.0);
+      }`,
+    fragmentShader: `
+      varying float vShade; varying float vTip;
+      void main(){
+        vec3 dark=vec3(.18,.31,.08), mid=vec3(.39,.55,.13), light=vec3(.66,.70,.25);
+        vec3 c=mix(dark,mid,vShade); c=mix(c,light,vTip*.38);
+        gl_FragColor=vec4(c,1.0);
+      }`
+  });
+  scene.add(new THREE.Mesh(bladeGeo, bladeMat));
+
+  // Broad yellow-green leaves, concentrated in clumps like the reference.
+  const leafGeo = new THREE.PlaneGeometry(.48, .16, 2, 1);
+  leafGeo.translate(.24, 0, 0); leafGeo.rotateX(-Math.PI / 2);
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0xa4ad42, roughness: 1, side: THREE.DoubleSide, flatShading: true });
+  const leaves = new THREE.InstancedMesh(leafGeo, leafMat, 1500);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 1500; i++) {
+    let x, z; do { x=(rand()-.5)*10.6; z=(rand()-.5)*7.45; } while (!insideTile(x,z));
+    const clump = Math.sin(x*1.8 + z*.7) + Math.cos(z*2.1);
+    dummy.position.set(x, heightAt(x,z)+.12+.08*rand(), z);
+    dummy.rotation.set((rand()-.5)*.35, rand()*Math.PI*2, (rand()-.5)*.25);
+    const s=(.45+rand()*.9)*(clump>1 ? 1.2 : .72); dummy.scale.set(s,s,s);
+    dummy.updateMatrix(); leaves.setMatrixAt(i,dummy.matrix);
+  }
+  leaves.castShadow = true; leaves.receiveShadow = true; scene.add(leaves);
+
+  // Sparse wildflowers: every bloom is attached to a flexible stem.
+  const flowerCount = 150;
+  const flowerVertices = [], flowerKinds = [];
+  const addFlowerTriangle = (a,b,c,kind) => {
+    flowerVertices.push(...a,...b,...c); flowerKinds.push(kind,kind,kind);
+  };
+  addFlowerTriangle([-.012,0,0],[.012,0,0],[-.008,1,0],0);
+  addFlowerTriangle([.012,0,0],[.008,1,0],[-.008,1,0],0);
+  for (let i=0;i<5;i++) {
+    const a=i*Math.PI*2/5, r=.075, s=.036;
+    addFlowerTriangle([0,1,0],[Math.cos(a-.58)*s,1+Math.sin(a-.58)*s,0],[Math.cos(a)*r,1+Math.sin(a)*r,0],1);
+    addFlowerTriangle([0,1,0],[0,1+Math.sin(a-.58)*s,Math.cos(a-.58)*s],[0,1+Math.sin(a)*r,Math.cos(a)*r],1);
+  }
+  const flowerGeo = new THREE.InstancedBufferGeometry();
+  flowerGeo.setAttribute('position',new THREE.Float32BufferAttribute(flowerVertices,3));
+  flowerGeo.setAttribute('kind',new THREE.Float32BufferAttribute(flowerKinds,1));
+  const flowerOffsets = new Float32Array(flowerCount*3), flowerData = new Float32Array(flowerCount*4);
+  for (let i=0;i<flowerCount;i++) {
+    let x,z; do { x=(rand()-.5)*10.55; z=(rand()-.5)*7.45; } while(!insideTile(x,z));
+    flowerOffsets[i*3]=x; flowerOffsets[i*3+1]=heightAt(x,z)+.02; flowerOffsets[i*3+2]=z;
+    flowerData[i*4]=.32+rand()*.42; flowerData[i*4+1]=rand()*Math.PI*2;
+    flowerData[i*4+2]=rand()*Math.PI*2; flowerData[i*4+3]=rand();
+  }
+  flowerGeo.setAttribute('offset',new THREE.InstancedBufferAttribute(flowerOffsets,3));
+  flowerGeo.setAttribute('flowerData',new THREE.InstancedBufferAttribute(flowerData,4));
+  const flowerMat = new THREE.ShaderMaterial({
+    side:THREE.DoubleSide,
+    uniforms:{time:{value:0}},
+    vertexShader:`
+      uniform float time; attribute vec3 offset; attribute vec4 flowerData; attribute float kind;
+      varying float vKind; varying float vTone;
+      void main(){
+        float h=flowerData.x; vec3 p=position;
+        if(kind<.5) p.y*=h; else p.y=h+(p.y-1.0);
+        float stemT=clamp(p.y/h,0.0,1.0);
+        float wind=sin(time*1.25+offset.x*.72+offset.z*.54+flowerData.z)*.09
+                  +cos(time*.73+offset.z)*.035;
+        p.x+=wind*stemT*stemT; p.z+=wind*.35*stemT*stemT;
+        float a=flowerData.y; mat2 r=mat2(cos(a),-sin(a),sin(a),cos(a)); p.xz=r*p.xz;
+        vKind=kind; vTone=flowerData.w;
+        gl_Position=projectionMatrix*modelViewMatrix*vec4(p+offset,1.0);
+      }`,
+    fragmentShader:`
+      varying float vKind; varying float vTone;
+      void main(){
+        vec3 stem=vec3(.25,.39,.10);
+        vec3 petal=mix(vec3(.66,.76,.88),vec3(.91,.94,.86),vTone);
+        gl_FragColor=vec4(mix(stem,petal,step(.5,vKind)),1.0);
+      }`
+  });
+  scene.add(new THREE.Mesh(flowerGeo,flowerMat));
+
+  // The stark cube gives the organic field its architectural counterpoint.
+  const cube = new THREE.Mesh(
+    new THREE.BoxGeometry(1.35,1.35,1.35),
+    new THREE.MeshStandardMaterial({ color:0x173d43, roughness:.9, metalness:0 })
+  );
+  cube.position.set(1.45, .79, -1.05); cube.castShadow = cube.receiveShadow = true; scene.add(cube);
+
+  const clock = new THREE.Clock();
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let pointerX=0, pointerY=0;
+  addEventListener('pointermove', e => { pointerX=e.clientX/innerWidth-.5; pointerY=e.clientY/innerHeight-.5; });
+  function animate(){
+    const t=clock.getElapsedTime(), windTime=still?0:t;
+    bladeMat.uniforms.time.value=windTime; flowerMat.uniforms.time.value=windTime;
+    const tx=8.9+pointerX*.42, ty=7.7-pointerY*.28;
+    camera.position.x += (tx-camera.position.x)*.025; camera.position.y += (ty-camera.position.y)*.025;
+    camera.lookAt(0,.15,0); renderer.render(scene,camera); requestAnimationFrame(animate);
+  }
+  animate();
+  addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>
