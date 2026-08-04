@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromatic Fluid</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050606; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .error {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+      color: #ddd;
+      font: 14px/1.5 system-ui, sans-serif;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas aria-label="Animated black and ivory fluid with chromatic edges"></canvas>
+  <script>
+    const canvas = document.querySelector('canvas');
+    const gl = canvas.getContext('webgl2', {
+      antialias: false,
+      alpha: false,
+      depth: false,
+      stencil: false,
+      powerPreference: 'high-performance'
+    });
+
+    if (!gl) {
+      canvas.remove();
+      document.body.insertAdjacentHTML('beforeend', '<p class="error">This animation needs a browser with WebGL 2 enabled.</p>');
+      throw new Error('WebGL 2 is unavailable');
+    }
+
+    const vertexSource = `#version 300 es
+      precision highp float;
+
+      const vec2 positions[3] = vec2[3](
+        vec2(-1.0, -1.0),
+        vec2( 3.0, -1.0),
+        vec2(-1.0,  3.0)
+      );
+
+      void main() {
+        gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+      }
+    `;
+
+    const fragmentSource = `#version 300 es
+      precision highp float;
+
+      uniform vec2 uResolution;
+      uniform float uTime;
+      uniform float uBloom;
+      out vec4 outColor;
+
+      mat2 rotate2d(float angle) {
+        float c = cos(angle);
+        float s = sin(angle);
+        return mat2(c, -s, s, c);
+      }
+
+      float hash21(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+      }
+
+      float noise(vec2 p) {
+        vec2 cell = floor(p);
+        vec2 local = fract(p);
+        local = local * local * (3.0 - 2.0 * local);
+
+        float a = hash21(cell);
+        float b = hash21(cell + vec2(1.0, 0.0));
+        float c = hash21(cell + vec2(0.0, 1.0));
+        float d = hash21(cell + vec2(1.0, 1.0));
+
+        return mix(mix(a, b, local.x), mix(c, d, local.x), local.y);
+      }
+
+      float fbm(vec2 p) {
+        float value = 0.0;
+        float amplitude = 0.52;
+        mat2 turn = rotate2d(0.57);
+
+        for (int i = 0; i < 6; i++) {
+          value += amplitude * noise(p);
+          p = turn * p * 2.03 + vec2(7.7, 3.1);
+          amplitude *= 0.5;
+        }
+        return value;
+      }
+
+      float bloomField(vec2 p, float time) {
+        vec2 q = p - vec2(-0.055, -0.13);
+        q = rotate2d(-0.20) * q;
+        q *= vec2(1.02, 0.86);
+
+        float opening = uBloom * uBloom * (3.0 - 2.0 * uBloom);
+        float softWarp = fbm(q * 2.25 + vec2(time * 0.012, -time * 0.009)) - 0.5;
+        float angle = atan(q.y, q.x);
+        float radius = length(q) * (1.0 + softWarp * 0.075);
+
+        float curl = (1.0 - opening) * 1.16 * exp(-radius * 3.0);
+        angle += curl + softWarp * 0.16;
+
+        float fivePetals = cos(angle * 5.0 + sin(angle * 2.0) * 0.52);
+        float ninePetals = cos(angle * 9.0 - opening * 1.35);
+        float petalRadius = mix(0.255, 0.765, opening)
+          * (0.86 + fivePetals * 0.15 + ninePetals * 0.045);
+
+        float shell = petalRadius - radius;
+        float openingFold = sin(
+          radius * 31.0 - angle * 3.2 + fivePetals * 1.55 - opening * 4.8
+        );
+        float fineRuffles = sin(radius * 72.0 + angle * 9.0 + softWarp * 4.0);
+        float foldStrength = smoothstep(0.035, petalRadius, radius);
+        shell += openingFold * 0.052 * foldStrength;
+        shell += fineRuffles * 0.012 * foldStrength;
+
+        float upwardLift = smoothstep(-0.65, 0.45, sin(angle));
+        shell += upwardLift * opening * 0.036;
+        shell -= exp(-radius * 18.0) * 0.09;
+        return shell;
+      }
+
+      float paperGrain(vec2 fragCoord, float time) {
+        return hash21(fragCoord + floor(time * 24.0) * 17.0) - 0.5;
+      }
+
+      float inkTone(float field) {
+        float mass = smoothstep(-0.052, 0.058, field);
+        float halo = exp(-abs(field) * 21.0);
+        float fineContours = sin(field * 330.0 + sin(field * 73.0) * 1.8);
+        float wideContours = sin(field * 116.0 - 0.6);
+        float ripple = halo * (fineContours * 0.105 + wideContours * 0.065);
+        return clamp(mass + ripple, 0.0, 1.0);
+      }
+
+      void main() {
+        vec2 p = (gl_FragCoord.xy - 0.5 * uResolution.xy) / uResolution.y;
+        float time = uTime;
+
+        vec2 probe = vec2(0.0028, 0.0018) * (1.0 + 0.35 * sin(time * 0.23));
+        float centerField = bloomField(p, time);
+        float red   = inkTone(bloomField(p + probe * 1.45, time));
+        float green = inkTone(centerField);
+        float blue  = inkTone(bloomField(p - probe * 1.75, time));
+
+        vec3 dark = vec3(0.008, 0.011, 0.010);
+        vec3 light = vec3(0.91, 0.90, 0.86);
+        vec3 color = vec3(
+          mix(dark.r, light.r, red),
+          mix(dark.g, light.g, green),
+          mix(dark.b, light.b, blue)
+        );
+
+        vec2 slope = vec2(dFdx(centerField), dFdy(centerField)) * uResolution.y;
+        vec3 normal = normalize(vec3(-slope * 0.72, 0.56));
+        vec3 keyLight = normalize(vec3(
+          -0.62 + 0.20 * sin(time * 0.13),
+           0.48 + 0.18 * cos(time * 0.11),
+           0.92
+        ));
+        vec3 fillLight = normalize(vec3(0.58, -0.44, 0.65));
+        vec3 halfVector = normalize(keyLight + vec3(0.0, 0.0, 1.0));
+
+        float diffuse = max(dot(normal, keyLight), 0.0);
+        float reflectedFill = pow(max(dot(normal, fillLight), 0.0), 7.0);
+        float broadSpecular = pow(max(dot(normal, halfVector), 0.0), 11.0);
+        float sharpSpecular = pow(max(dot(normal, halfVector), 0.0), 72.0);
+
+        vec2 reflection = normal.xy / (normal.z + 1.08);
+        float reflectedBands = 0.5 + 0.5 * sin(
+          reflection.x * 18.0 - reflection.y * 9.0 + time * 0.24
+        );
+        reflectedBands = pow(reflectedBands, 5.0);
+        float brushedLines = 0.5 + 0.5 * sin(
+          centerField * 510.0 + dot(p, vec2(82.0, -29.0)) - time * 0.36
+        );
+        brushedLines = pow(brushedLines, 9.0);
+
+        color *= 0.47 + diffuse * 0.72;
+        vec3 warmReflection = vec3(1.0, 0.93, 0.80);
+        vec3 coolReflection = vec3(0.73, 0.88, 1.0);
+        color += warmReflection * (broadSpecular * 0.50 + sharpSpecular * 1.08);
+        color += coolReflection * reflectedFill * 0.28;
+        color += mix(coolReflection, warmReflection, green) * reflectedBands * 0.22;
+
+        float edge = exp(-abs(centerField) * 32.0);
+        color += warmReflection * brushedLines * edge * 0.16;
+        color.r += edge * (red - blue) * 0.68;
+        color.b += edge * (blue - red) * 0.74;
+        color.g += edge * (green - 0.5 * red - 0.5 * blue) * 0.22;
+
+        float vignette = 1.0 - 0.22 * smoothstep(0.18, 0.82, dot(p, p));
+        color *= vignette;
+        color += paperGrain(gl_FragCoord.xy, time) * 0.013;
+        color = pow(max(color, 0.0), vec3(0.94));
+
+        float bloomGate = smoothstep(-0.105, -0.005, centerField);
+        vec3 ground = vec3(0.0025, 0.0035, 0.0035);
+        ground += paperGrain(gl_FragCoord.xy, time) * 0.004;
+        color = mix(ground, color, bloomGate);
+
+        outColor = vec4(color, 1.0);
+      }
+    `;
+
+    function compile(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(message);
+      }
+      return shader;
+    }
+
+    const program = gl.createProgram();
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program));
+    }
+
+    gl.useProgram(program);
+    const resolutionLocation = gl.getUniformLocation(program, 'uResolution');
+    const timeLocation = gl.getUniformLocation(program, 'uTime');
+    const bloomLocation = gl.getUniformLocation(program, 'uBloom');
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const startedAt = performance.now();
+
+    function resize() {
+      const pixelRatio = Math.min(devicePixelRatio || 1, 2);
+      const width = Math.round(innerWidth * pixelRatio);
+      const height = Math.round(innerHeight * pixelRatio);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        gl.viewport(0, 0, width, height);
+      }
+    }
+
+    function render(now) {
+      resize();
+      const elapsed = reducedMotion ? 5.0 : (now - startedAt) / 1000;
+      gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+      gl.uniform1f(timeLocation, elapsed);
+      gl.uniform1f(bloomLocation, reducedMotion ? 1.0 : Math.min(elapsed / 15.5, 1.0));
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (!reducedMotion) requestAnimationFrame(render);
+    }
+
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
