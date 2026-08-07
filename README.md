@@ -14,3 +14,8 @@ This repository contains a collection of generative art and animations created u
   * *Credit:* [@mathelirium](https://x.com/mathelirium)
 * **[infinite-particles](infinite-particles/)** - variations
 * **[waving-grass](waving-grass.html/)**
+* **[liquid-metal-tao](liquid-metal-tao.html/)**
+  * *Credit:* [@chuyouqi](https://x.com/chuyouqi)
+* **[Chromatic-Flow](Chromatic-Flow.html/)**
+  * *Credit:* [@chuyouqi](https://x.com/chuyouqi) 
+    
