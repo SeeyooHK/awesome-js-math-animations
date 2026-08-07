@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SDF Duckie</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #ef6543; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #error { color: white; font: 16px/1.5 system-ui; padding: 2rem; }
+  </style>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const uniforms = {
+      uResolution: { value: new THREE.Vector2() },
+      uTime: { value: 0 },
+      uPointer: { value: new THREE.Vector2(0.75, 0.3) }
+    };
+
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: `
+        void main() {
+          gl_Position = vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec2 uPointer;
+
+        #define MAX_STEPS 120
+        #define FAR 12.0
+        #define EPSILON 0.001
+
+        float gMagnetMix = 0.0;
+
+        mat2 rotate2(float a) {
+          float c = cos(a), s = sin(a);
+          return mat2(c, -s, s, c);
+        }
+
+        float sdSphere(vec3 p, float r) {
+          return length(p) - r;
+        }
+
+        float sdEllipsoid(vec3 p, vec3 r) {
+          float k0 = length(p / r);
+          float k1 = length(p / (r * r));
+          return k0 * (k0 - 1.0) / k1;
+        }
+
+        float sdRoundBox(vec3 p, vec3 b, float r) {
+          vec3 q = abs(p) - b + r;
+          return min(max(q.x, max(q.y, q.z)), 0.0) + length(max(q, 0.0)) - r;
+        }
+
+        float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+          vec3 pa = p - a, ba = b - a;
+          float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+          return length(pa - ba * h) - r;
+        }
+
+        float sdCone(vec3 p, vec2 c, float h) {
+          vec2 q = h * vec2(c.x / c.y, -1.0);
+          vec2 w = vec2(length(p.xz), p.y);
+          vec2 a = w - q * clamp(dot(w, q) / dot(q, q), 0.0, 1.0);
+          vec2 b = w - q * vec2(clamp(w.x / q.x, 0.0, 1.0), 1.0);
+          float k = sign(q.y);
+          float d = min(dot(a, a), dot(b, b));
+          float s = max(k * (w.x * q.y - w.y * q.x), k * (w.y - q.y));
+          return sqrt(d) * sign(s);
+        }
+
+        float sdTorus(vec3 p, vec2 radii) {
+          return length(vec2(length(p.xy) - radii.x, p.z)) - radii.y;
+        }
+
+        vec2 unite(vec2 a, vec2 b) {
+          return a.x < b.x ? a : b;
+        }
+
+        float smoothUnion(float a, float b, float radius) {
+          float h = clamp(0.5 + 0.5 * (b - a) / radius, 0.0, 1.0);
+          return mix(b, a, h) - radius * h * (1.0 - h);
+        }
+
+        vec3 ballPosition() {
+          return vec3(
+            clamp(uPointer.x * 1.78, -2.25, 2.25),
+            clamp(0.12 + uPointer.y * 1.78, -1.05, 1.72),
+            0.50
+          );
+        }
+
+        vec2 sceneSDF(vec3 p) {
+          vec2 ground = vec2(p.y + 1.32, 8.0);
+          vec2 result = vec2(FAR, -1.0);
+
+          // Mico's broad plush body and the continuous hood arch above it.
+          vec3 bodyP = p - vec3(0.0, 0.05, 0.0);
+          float bodyCore = sdEllipsoid(bodyP, vec3(0.92, 1.00, 0.50));
+          float headHood = sdEllipsoid(p - vec3(0.0, 0.62, -0.02), vec3(0.94, 0.79, 0.50));
+          float body = smoothUnion(bodyCore, headHood, 0.20);
+          result = unite(result, vec2(body, 1.0));
+
+          // Drooping wings and two short, rounded feet.
+          vec3 wingL = p - vec3(-0.88, -0.10, 0.02);
+          vec3 wingR = p - vec3(0.88, -0.10, 0.02);
+          wingL.xy = rotate2(-0.10) * wingL.xy;
+          wingR.xy = rotate2(0.10) * wingR.xy;
+          result = unite(result, vec2(sdEllipsoid(wingL, vec3(0.28, 0.65, 0.31)), 1.0));
+          result = unite(result, vec2(sdEllipsoid(wingR, vec3(0.28, 0.65, 0.31)), 1.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(-0.36, -1.10, 0.13), vec3(0.35, 0.22, 0.34)), 1.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.36, -1.10, 0.13), vec3(0.35, 0.22, 0.34)), 1.0));
+
+          // Three inset bangs beneath the hood; the centre one hangs lower.
+          result = unite(result, vec2(sdEllipsoid(p - vec3(-0.30, 1.03, 0.45), vec3(0.21, 0.21, 0.17)), 1.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.0, 1.02, 0.47), vec3(0.24, 0.28, 0.18)), 1.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.30, 1.03, 0.45), vec3(0.21, 0.21, 0.17)), 1.0));
+          vec2 character = result;
+
+          // Pale inset face panel.
+          vec3 ball = ballPosition();
+          vec2 glance = vec2(
+            clamp(ball.x * 0.035, -0.060, 0.060),
+            clamp((ball.y - 0.42) * 0.090, -0.100, 0.100)
+          );
+          result = unite(result, vec2(sdRoundBox(p - vec3(0.0, 0.27, 0.475), vec3(0.70, 0.68, 0.105), 0.30), 3.0));
+
+          // Two white eyes, warm brown irises, dark pupils and highlights.
+          for (int side = -1; side <= 1; side += 2) {
+            float x = float(side) * 0.285;
+            result = unite(result, vec2(sdEllipsoid(p - vec3(x, 0.48, 0.575), vec3(0.235, 0.275, 0.085)), 6.0));
+            result = unite(result, vec2(sdEllipsoid(p - vec3(x + glance.x, 0.45 + glance.y, 0.653), vec3(0.105, 0.145, 0.045)), 4.0));
+            result = unite(result, vec2(sdEllipsoid(p - vec3(x + glance.x, 0.46 + glance.y, 0.691), vec3(0.060, 0.085, 0.025)), 5.0));
+            result = unite(result, vec2(sdSphere(p - vec3(x - 0.030 + glance.x, 0.515 + glance.y, 0.716), 0.023), 6.0));
+
+            vec3 rimP = p - vec3(x, 0.48, 0.635);
+            float eyeRim = sdTorus(rimP, vec2(0.245, 0.025));
+            if (side < 0) {
+              float cOpening = sdRoundBox(rimP - vec3(0.225, 0.0, 0.0), vec3(0.13, 0.105, 0.075), 0.012);
+              eyeRim = max(eyeRim, -cOpening);
+            }
+            result = unite(result, vec2(eyeRim, 9.0));
+          }
+
+          // Mico's central yellow spectacle bridge and brow stem.
+          result = unite(result, vec2(sdRoundBox(p - vec3(0.0, 0.48, 0.665), vec3(0.085, 0.025, 0.022), 0.018), 9.0));
+          result = unite(result, vec2(sdRoundBox(p - vec3(0.0, 0.67, 0.650), vec3(0.035, 0.19, 0.025), 0.018), 9.0));
+          result = unite(result, vec2(sdRoundBox(p - vec3(0.0, 0.86, 0.635), vec3(0.10, 0.025, 0.022), 0.018), 9.0));
+
+          // Mico's broad bill: narrow at the nose, drooping toward its corners,
+          // with a warm red opening and tiny recessed nostril marks.
+          vec3 billP = p - vec3(0.0, -0.035, 0.650);
+          billP.y += 0.20 * abs(billP.x);
+          float bill = sdEllipsoid(billP, vec3(0.39, 0.145, 0.125));
+          float billRoot = sdEllipsoid(p - vec3(0.0, 0.055, 0.645), vec3(0.18, 0.155, 0.115));
+          result = unite(result, vec2(smoothUnion(bill, billRoot, 0.055), 2.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.0, -0.175, 0.705), vec3(0.285, 0.065, 0.080)), 2.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.0, -0.125, 0.770), vec3(0.235, 0.027, 0.016)), 10.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(-0.095, 0.035, 0.765), vec3(0.010, 0.017, 0.008)), 11.0));
+          result = unite(result, vec2(sdEllipsoid(p - vec3(0.095, 0.035, 0.765), vec3(0.010, 0.017, 0.008)), 11.0));
+
+          // A wide smooth-min makes the pointer sphere pull a liquid bridge
+          // from the alien instead of merely intersecting its surface.
+          float alienDistance = character.x;
+          float ballDistance = sdSphere(p - ball, 0.34);
+          gMagnetMix = smoothstep(-0.255, 0.255, alienDistance - ballDistance);
+          float mergedDistance = smoothUnion(alienDistance, ballDistance, 0.60);
+          float mergedMaterial = ballDistance < alienDistance ? 7.0 : character.y;
+          result = unite(result, vec2(mergedDistance, mergedMaterial));
+
+          return unite(ground, result);
+        }
+
+        vec2 raymarch(vec3 ro, vec3 rd) {
+          float distanceTravelled = 0.0;
+          float materialId = -1.0;
+          for (int i = 0; i < MAX_STEPS; i++) {
+            vec2 hit = sceneSDF(ro + rd * distanceTravelled);
+            if (hit.x < EPSILON * max(1.0, distanceTravelled) || distanceTravelled > FAR) {
+              materialId = hit.y;
+              break;
+            }
+            distanceTravelled += hit.x * 0.78;
+          }
+          if (distanceTravelled > FAR) materialId = -1.0;
+          return vec2(distanceTravelled, materialId);
+        }
+
+        vec3 normalAt(vec3 p) {
+          vec2 e = vec2(EPSILON, 0.0);
+          return normalize(vec3(
+            sceneSDF(p + e.xyy).x - sceneSDF(p - e.xyy).x,
+            sceneSDF(p + e.yxy).x - sceneSDF(p - e.yxy).x,
+            sceneSDF(p + e.yyx).x - sceneSDF(p - e.yyx).x
+          ));
+        }
+
+        float ambientOcclusion(vec3 p, vec3 n) {
+          float occlusion = 0.0;
+          float weight = 1.0;
+          for (int i = 1; i <= 5; i++) {
+            float distance = 0.035 * float(i);
+            occlusion += (distance - sceneSDF(p + n * distance).x) * weight;
+            weight *= 0.62;
+          }
+          return clamp(1.0 - occlusion * 2.4, 0.0, 1.0);
+        }
+
+        float softShadow(vec3 ro, vec3 rd, float maxDistance) {
+          float shadow = 1.0;
+          float travelled = 0.035;
+          for (int i = 0; i < 44; i++) {
+            float h = sceneSDF(ro + rd * travelled).x;
+            shadow = min(shadow, 14.0 * h / travelled);
+            travelled += clamp(h, 0.025, 0.20);
+            if (h < 0.0005 || travelled > maxDistance) break;
+          }
+          return clamp(shadow, 0.18, 1.0);
+        }
+
+        vec3 baseColour(float id, vec3 p) {
+          if (id < 1.5) return vec3(1.20, 0.72, 0.020);
+          if (id < 2.5) return vec3(1.20, 0.36, 0.040);
+          if (id < 3.5) return vec3(0.94, 1.00, 0.42);
+          if (id < 4.5) return vec3(0.40, 0.19, 0.055);
+          if (id < 5.5) return vec3(0.035, 0.020, 0.012);
+          if (id < 6.5) return vec3(0.98, 0.96, 0.82);
+          if (id < 7.5) return vec3(0.25, 0.12, 0.52);
+          if (id < 8.5) return vec3(0.88, 0.29, 0.20);
+          if (id < 9.5) return vec3(1.12, 0.66, 0.012);
+          if (id < 10.5) return vec3(0.55, 0.035, 0.025);
+          return vec3(0.50, 0.12, 0.025);
+        }
+
+        void main() {
+          vec2 pixel = (2.0 * gl_FragCoord.xy - uResolution.xy) / uResolution.y;
+
+          float t = mod(uTime, 12.0);
+          float breathe = 0.025 * sin(t * 2.1);
+          vec3 ro = vec3(0.0, 0.12 + breathe, 5.0);
+          vec3 target = vec3(0.0, 0.12, 0.0);
+          vec3 forward = normalize(target - ro);
+          vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+          vec3 up = cross(right, forward);
+          vec3 rd = normalize(forward * 2.35 + right * pixel.x + up * pixel.y);
+
+          vec2 hit = raymarch(ro, rd);
+          vec3 colour;
+
+          if (hit.y < 0.0) {
+            float glow = 1.0 - 0.08 * length(pixel - vec2(-0.35, 0.45));
+            colour = vec3(0.95, 0.31, 0.21) * glow;
+          } else {
+            vec3 p = ro + rd * hit.x;
+            vec3 n = normalAt(p);
+            vec3 lightPosition = vec3(-3.2, 4.8, 4.0);
+            vec3 toLight = lightPosition - p;
+            float lightDistance = length(toLight);
+            vec3 l = toLight / lightDistance;
+            vec3 v = normalize(ro - p);
+            vec3 h = normalize(l + v);
+            float diffuse = max(dot(n, l), 0.0);
+            float shadow = softShadow(p + n * 0.006, l, lightDistance);
+            float ao = ambientOcclusion(p, n);
+            float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+            float gloss = hit.y == 8.0 ? 18.0 : 70.0;
+            float specular = pow(max(dot(n, h), 0.0), gloss) * shadow;
+
+            // Shadow and AO probes also call sceneSDF, so sample the hit once
+            // more to recover the material blend at this exact surface point.
+            sceneSDF(p);
+            float magnetMix = hit.y == 8.0 ? 0.0 : gMagnetMix;
+            vec3 albedo = mix(baseColour(hit.y, p), vec3(0.25, 0.12, 0.52), magnetMix);
+            vec3 warmLight = vec3(1.0, 0.80, 0.67);
+            colour = albedo * (0.22 * ao + 0.88 * diffuse * shadow * warmLight);
+            colour += specular * vec3(1.0, 0.91, 0.82) * (hit.y == 8.0 ? 0.10 : 0.72);
+            colour += rim * albedo * 0.22;
+
+            if (hit.y == 8.0) {
+              float vignette = 1.0 - smoothstep(1.6, 4.6, length(p.xz));
+              colour *= 0.78 + 0.22 * vignette;
+            }
+          }
+
+          colour = colour / (colour + vec3(0.72));
+          colour = pow(colour, vec3(0.4545));
+          float vignette = 1.0 - 0.16 * dot(pixel * 0.55, pixel * 0.55);
+          gl_FragColor = vec4(colour * vignette, 1.0);
+        }
+      `
+    });
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.Camera();
+    scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const clock = new THREE.Clock();
+    const pointerTarget = uniforms.uPointer.value.clone();
+
+    function trackPointer(event) {
+      pointerTarget.set(
+        (2.0 * event.clientX - innerWidth) / innerHeight,
+        (innerHeight - 2.0 * event.clientY) / innerHeight
+      );
+    }
+
+    function resize() {
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.getDrawingBufferSize(uniforms.uResolution.value);
+    }
+
+    function animate() {
+      uniforms.uTime.value = reducedMotion ? 1.5 : clock.getElapsedTime();
+      uniforms.uPointer.value.lerp(pointerTarget, reducedMotion ? 1.0 : 0.14);
+      renderer.render(scene, camera);
+      if (!reducedMotion) requestAnimationFrame(animate);
+    }
+
+    addEventListener('resize', resize);
+    addEventListener('pointermove', trackPointer, { passive: true });
+    addEventListener('pointerdown', trackPointer, { passive: true });
+    resize();
+    animate();
+  </script>
+</body>
+</html>
