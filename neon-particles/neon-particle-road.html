@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neon Particle City</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #020008; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .hint {
+      position: fixed;
+      left: 18px;
+      bottom: 16px;
+      color: rgba(210, 225, 255, .55);
+      font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .12em;
+      pointer-events: none;
+      text-transform: uppercase;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="hint">Move pointer · click to pause</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.25;
+    document.body.prepend(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x010006);
+    scene.fog = new THREE.FogExp2(0x050012, 0.0125);
+
+    const camera = new THREE.PerspectiveCamera(64, innerWidth / innerHeight, 0.1, 240);
+    camera.position.set(0, 2.25, 8);
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.65, 0.78, 0.12);
+    composer.addPass(bloom);
+
+    // Stable pseudo-randomness keeps the skyline unchanged between reloads.
+    let seed = 0x2f6e2b1;
+    function random() {
+      seed |= 0;
+      seed = seed + 0x6d2b79f5 | 0;
+      let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+      return ((value ^ value >>> 14) >>> 0) / 4294967296;
+    }
+
+    const cyan = new THREE.Color(0x39dfff);
+    const blue = new THREE.Color(0x3977ff);
+    const pink = new THREE.Color(0xff2b9c);
+    const violet = new THREE.Color(0x8c3cff);
+    const white = new THREE.Color(0xeaf7ff);
+
+    function sampleBoxSurface(width, height, depth, count, colorA, colorB) {
+      const positions = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
+      const color = new THREE.Color();
+
+      for (let i = 0; i < count; i++) {
+        const face = Math.floor(random() * 6);
+        let x = (random() - .5) * width;
+        let y = random() * height;
+        let z = (random() - .5) * depth;
+
+        if (face < 2) x = (face ? .5 : -.5) * width;
+        else if (face < 4) y = (face === 3 ? 1 : 0) * height;
+        else z = (face === 5 ? .5 : -.5) * depth;
+
+        const offset = i * 3;
+        positions[offset] = x;
+        positions[offset + 1] = y;
+        positions[offset + 2] = z;
+
+        color.copy(colorA).lerp(colorB, random() * .85);
+        const sparkle = .55 + random() * .75;
+        colors[offset] = color.r * sparkle;
+        colors[offset + 1] = color.g * sparkle;
+        colors[offset + 2] = color.b * sparkle;
+      }
+      return { positions, colors };
+    }
+
+    const cityRows = [];
+    const rowCount = 19;
+    const rowSpacing = 9;
+
+    function makeBuilding(width, height, depth, side) {
+      const group = new THREE.Group();
+      const palette = side < 0 ? [cyan, blue] : [pink, violet];
+      const pointCount = Math.floor(150 + width * height * .9);
+      const data = sampleBoxSurface(width, height, depth, pointCount, palette[0], palette[1]);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+
+      const points = new THREE.Points(geometry, new THREE.PointsMaterial({
+        size: .105,
+        sizeAttenuation: true,
+        vertexColors: true,
+        transparent: true,
+        opacity: .88,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      }));
+      group.add(points);
+
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(width, height, depth)),
+        new THREE.LineBasicMaterial({
+          color: side < 0 ? 0x1488cc : 0xc51a73,
+          transparent: true,
+          opacity: .22,
+          blending: THREE.AdditiveBlending
+        })
+      );
+      edges.position.y = height * .5;
+      group.add(edges);
+      return group;
+    }
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+      const row = new THREE.Group();
+      row.position.z = -10 - rowIndex * rowSpacing;
+
+      for (const side of [-1, 1]) {
+        for (let layer = 0; layer < 3; layer++) {
+          const width = 3.3 + random() * 3.2;
+          const depth = 6.2 + random() * 3.8;
+          const height = 6 + random() * 11 + layer * 1.3;
+          const building = makeBuilding(width, height, depth, side);
+          building.position.x = side * (7.1 + layer * 5 + random() * 1.8);
+          building.position.z = (random() - .5) * 2.5;
+          row.add(building);
+        }
+      }
+      cityRows.push(row);
+      scene.add(row);
+    }
+
+    function makeRoadParticles(count) {
+      const positions = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
+      const phases = new Float32Array(count);
+      const color = new THREE.Color();
+
+      for (let i = 0; i < count; i++) {
+        const side = i % 2 ? 1 : -1;
+        const z = -175 + random() * 184;
+        const halfWidth = 1.15 + Math.max(0, z + 175) / 184 * .3;
+        const x = side * (4.55 + (random() - .5) * halfWidth);
+        const offset = i * 3;
+        positions[offset] = x;
+        positions[offset + 1] = .05 + random() * .32;
+        positions[offset + 2] = z;
+        phases[i] = random() * Math.PI * 2;
+        color.copy(side < 0 ? cyan : pink).lerp(white, random() * .68);
+        colors[offset] = color.r;
+        colors[offset + 1] = color.g;
+        colors[offset + 2] = color.b;
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute('phase', new THREE.BufferAttribute(phases, 1));
+
+      const material = new THREE.ShaderMaterial({
+        uniforms: { uTime: { value: 0 }, uPixelRatio: { value: renderer.getPixelRatio() } },
+        vertexColors: true,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        vertexShader: `
+          uniform float uTime;
+          uniform float uPixelRatio;
+          attribute float phase;
+          varying vec3 vColor;
+          varying float vAlpha;
+          void main() {
+            vec3 p = position;
+            p.z = mod(p.z + 175.0 + uTime * 18.0, 184.0) - 175.0;
+            p.x += sin(p.z * .045 + uTime * .55) * .42 * sign(p.x);
+            p.y += sin(uTime * 4.0 + phase) * .035;
+            vec4 mv = modelViewMatrix * vec4(p, 1.0);
+            gl_Position = projectionMatrix * mv;
+            gl_PointSize = uPixelRatio * (3.0 + 3.5 * (sin(phase) * .5 + .5)) * (8.0 / -mv.z);
+            gl_PointSize = clamp(gl_PointSize, 1.0, 8.0);
+            vColor = color;
+            vAlpha = .5 + .5 * sin(phase + uTime * 2.0);
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vColor;
+          varying float vAlpha;
+          void main() {
+            vec2 p = gl_PointCoord - .5;
+            float glow = smoothstep(.5, 0.0, length(p));
+            gl_FragColor = vec4(vColor * (1.3 + glow), glow * (.35 + vAlpha * .65));
+          }
+        `
+      });
+      return new THREE.Points(geometry, material);
+    }
+
+    const roadParticles = makeRoadParticles(10500);
+    scene.add(roadParticles);
+
+    function makeLightTrail(side) {
+      const points = [];
+      for (let i = 0; i <= 180; i++) {
+        const z = 9 - i;
+        const x = side * (4.45 + Math.sin(i * .045) * .42);
+        points.push(new THREE.Vector3(x, .13, z));
+      }
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      return new THREE.Line(geometry, new THREE.LineBasicMaterial({
+        color: side < 0 ? 0xa8efff : 0xff71cf,
+        transparent: true,
+        opacity: .92,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      }));
+    }
+    scene.add(makeLightTrail(-1), makeLightTrail(1));
+
+    const horizon = new THREE.Sprite(new THREE.SpriteMaterial({
+      color: 0xd8eaff,
+      transparent: true,
+      opacity: .7,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    }));
+    horizon.position.set(0, 2.8, -150);
+    horizon.scale.set(8, 8, 1);
+    scene.add(horizon);
+
+    const starPositions = new Float32Array(1800 * 3);
+    for (let i = 0; i < 1800; i++) {
+      starPositions[i * 3] = (random() - .5) * 80;
+      starPositions[i * 3 + 1] = 7 + random() * 30;
+      starPositions[i * 3 + 2] = -random() * 190;
+    }
+    const starGeometry = new THREE.BufferGeometry();
+    starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    scene.add(new THREE.Points(starGeometry, new THREE.PointsMaterial({
+      color: 0x768cff,
+      size: .065,
+      transparent: true,
+      opacity: .7,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    })));
+
+    const pointer = new THREE.Vector2();
+    let paused = false;
+    addEventListener('pointermove', event => {
+      pointer.x = event.clientX / innerWidth * 2 - 1;
+      pointer.y = event.clientY / innerHeight * 2 - 1;
+    });
+    addEventListener('click', () => paused = !paused);
+
+    const clock = new THREE.Clock();
+    let elapsed = 0;
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = Math.min(clock.getDelta(), .05);
+      if (!paused) elapsed += delta;
+
+      if (!paused) {
+        for (const row of cityRows) {
+          row.position.z += delta * 10.5;
+          if (row.position.z > 14) row.position.z -= rowCount * rowSpacing;
+        }
+      }
+
+      roadParticles.material.uniforms.uTime.value = elapsed;
+      camera.position.x += (pointer.x * .75 - camera.position.x) * .035;
+      camera.position.y += (2.25 - pointer.y * .35 - camera.position.y) * .035;
+      camera.lookAt(pointer.x * .35, 3.05 - pointer.y * .2, -38);
+      camera.rotation.z = -pointer.x * .012 + Math.sin(elapsed * .35) * .004;
+      composer.render();
+    }
+    animate();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+      renderer.setSize(innerWidth, innerHeight);
+      composer.setSize(innerWidth, innerHeight);
+      roadParticles.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    });
+  </script>
+</body>
+</html>
