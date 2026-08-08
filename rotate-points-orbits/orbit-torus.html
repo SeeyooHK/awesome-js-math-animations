@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orbiting Torus</title>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100vw;
+      max-height: 100vh;
+    }
+  </style>
+</head>
+
+<body>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.10/lib/p5.min.js"></script>
+  <script>
+    t = 0
+    s = 0
+
+    drawCore = _ => {
+      core.clear(m = 200)
+      core.stroke(255, 46)
+
+      for (s += PI / 240, i = 2e4; i-- > 7;) {
+        d = 7 * cos(mag(k = i % 25 - 12, e = i / 800) / 3 + s / 2)
+        core.point(
+          k * 4 + d * k * sin(d + e / 9 + s) + m,
+          e * 2 - d * 9 - d * 9 * cos(d + s) + m
+        )
+      }
+
+      coreFrame = core.get()
+      core.clear()
+      core.push()
+      core.translate(m, m)
+      for (i = 6; i--; core.rotate(PI / 3))
+        core.image(coreFrame, -m, -m)
+      core.pop()
+    }
+
+    draw = _ => {
+      if (!t) {
+        createCanvas(W = 600, W, WEBGL)
+        core = createGraphics(w = 400, w)
+      }
+      background(0)
+      drawCore()
+      p = PI / 40
+      noStroke`miya`
+      rotateX(.5)
+      rotateY(-.5)
+      push()
+      translate(0, 0, -35)
+      image(core, -m, -m)
+      pop()
+      r = 75
+      R = 3.2
+      q = .38
+      for (y = 40; y--;)
+        for (x = 80; x--; pop(sphere(.45 + cos(v) * .18)))
+          push(), translate(
+            (R + sin(v = (y + t) * p * 2) * q) * cos(u = (x + t) * p) * r,
+            (R + sin(v) * q) * sin(u) * r,
+            z = cos(v) * q * r
+          )
+      t = (t + .02) % 1
+    }
+  </script>
+</body>
+
+</html>
