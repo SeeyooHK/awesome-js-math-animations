@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Particle Night Sky</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #020d1e; }
+    canvas { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+    #foreground { z-index: 1; pointer-events: none; }
+    #message { position: fixed; inset: 0; display: none; place-items: center; padding: 2rem; color: #d8bb8c; font: 15px system-ui; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="An animated particle night sky above a flower meadow"></canvas>
+  <canvas id="foreground" aria-hidden="true"></canvas>
+  <div id="message" role="alert"></div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const message = document.querySelector('#message');
+      const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false });
+
+      function fail(text) {
+        canvas.hidden = true;
+        message.textContent = text;
+        message.style.display = 'grid';
+      }
+      if (!gl) { fail('This animation requires WebGL 2.'); return; }
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+        in vec2 a_uv;
+        in float a_seed;
+        uniform float u_time;
+        uniform float u_aspect;
+        uniform vec2 u_viewport;
+        out vec3 v_color;
+        out float v_alpha;
+
+        float hash(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        float noise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1,0)), f.x),
+                     mix(hash(i + vec2(0,1)), hash(i + vec2(1)), f.x), f.y);
+        }
+        float fbm(vec2 p) {
+          float value = 0.0, amplitude = 0.5;
+          for (int i = 0; i < 4; i++) {
+            value += noise(p) * amplitude;
+            p = mat2(1.62, 1.18, -1.18, 1.62) * p;
+            amplitude *= 0.48;
+          }
+          return value;
+        }
+        float segment(vec2 p, vec2 a, vec2 b) {
+          vec2 pa = p-a, ba = b-a;
+          float h = clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0);
+          return length(pa-ba*h);
+        }
+        float ink(float distanceValue, float width) {
+          return smoothstep(width, width * 0.22, distanceValue);
+        }
+        float boxOutline(vec2 p, vec2 halfSize, float width) {
+          vec2 q = abs(p) - halfSize;
+          return ink(abs(max(q.x, q.y)), width)
+            * (1.0 - smoothstep(width, width * 3.5, max(q.x, q.y)));
+        }
+        vec2 curl(vec2 p, vec2 center, float radius, float force, float phase) {
+          vec2 d = p-center;
+          float r = length(d);
+          float falloff = smoothstep(radius, 0.0, r);
+          return vec2(-d.y,d.x)/max(r,.025) * falloff * force * sin(phase+r*9.0);
+        }
+
+        float spiral(vec2 uv, vec2 center, float scale, float phase) {
+          vec2 q = uv-center;
+          q.x *= u_aspect;
+          float r = length(q)/scale;
+          float a = atan(q.y,q.x);
+          float fray = fbm(q*vec2(16.0,22.0));
+          float curve = a-r*8.7+phase+(fray-.5)*.55;
+          float crest = ink(abs(sin(curve)), .20);
+          float shoulder = ink(abs(sin(curve+.31)), .095)*.42;
+          float threads = ink(abs(sin(a*4.0-r*33.0+phase*.7+fray*1.8)), .085) * .29;
+          float spray = smoothstep(.73,.96,noise(q*vec2(105.0,78.0)+fray));
+          return (crest+shoulder+threads+spray*.17)*smoothstep(1.10,.10,r)*smoothstep(.055,.17,r);
+        }
+
+        vec3 proceduralPaint(vec2 uv, float t) {
+          float grain = fbm(uv*vec2(55.0,34.0));
+          float fine = noise(uv*vec2(310.0,180.0)+a_seed*3.0);
+          float strokes = 0.0;
+
+          strokes += spiral(uv, vec2(.50,.58), .46, .18) * .86;
+          strokes += spiral(uv, vec2(.17,.80), .21, -1.0) * .46;
+
+          vec2 lantern = uv-vec2(.31,.47);
+          lantern.x *= u_aspect;
+          float lanternShape = boxOutline(lantern,vec2(.050,.060),.009);
+          lanternShape += ink(segment(lantern,vec2(-.028,.066),vec2(.028,.066)),.006);
+          lanternShape += ink(segment(lantern,vec2(-.028,.066),vec2(-.040,.055)),.006);
+          lanternShape += ink(segment(lantern,vec2(.028,.066),vec2(.040,.055)),.006);
+          strokes += lanternShape*.42;
+
+          vec2 current = uv-vec2(.50,.58);
+          current.x *= u_aspect;
+          float currentRadius = length(current);
+          float currentAngle = atan(current.y,current.x);
+          float sweep = ink(abs(sin(currentAngle*1.45-currentRadius*13.0+grain*.8)),.20);
+          strokes += sweep*smoothstep(.92,.12,currentRadius)*smoothstep(.06,.16,currentRadius)*.41;
+          float filaments = ink(abs(sin(currentAngle*7.0-currentRadius*66.0+grain*5.5)),.13);
+          strokes += filaments*smoothstep(.86,.10,currentRadius)*smoothstep(.06,.15,currentRadius)*.25;
+
+          float lower = 1.0-smoothstep(.28,.66,uv.y);
+          float bands = ink(abs(sin(uv.y*52.0 + uv.x*11.0 + grain*5.0)), .22);
+          strokes += bands*lower*.24;
+
+          vec2 fp = uv-vec2(.82,.80);
+          fp.x *= u_aspect;
+          float fa = atan(fp.y,fp.x), fr = length(fp);
+          float petalFray=(noise(fp*180.0)-.5)*.012;
+          float flower = ink(abs(fr-(.105+.034*cos(fa*8.0)+petalFray)),.014);
+          flower += ink(abs(sin(fa*4.0+petalFray*18.0)),.17)*smoothstep(.13,.018,fr)*.72;
+          flower += ink(fr,.018)*.7;
+          strokes += flower*.68;
+
+          vec2 b = uv-vec2(.72,.46);
+          b.x *= u_aspect;
+          b /= .78;
+          float boat = 0.0;
+          boat += ink(segment(b,vec2(-.17,-.035),vec2(.17,-.035)),.008);
+          boat += ink(segment(b,vec2(-.17,-.035),vec2(-.08,-.09)),.008);
+          boat += ink(segment(b,vec2(-.08,-.09),vec2(.11,-.085)),.008);
+          boat += ink(segment(b,vec2(.11,-.085),vec2(.17,-.035)),.008);
+          boat += ink(segment(b,vec2(0,-.02),vec2(0,.18)),.007);
+          boat += ink(segment(b,vec2(0,.17),vec2(-.14,-.01)),.007);
+          boat += ink(segment(b,vec2(-.14,-.01),vec2(0,-.01)),.007);
+          boat += ink(segment(b,vec2(.01,.16),vec2(.12,0)),.007);
+          boat += ink(segment(b,vec2(.12,0),vec2(.01,0)),.007);
+          strokes += min(boat,1.0)*.66;
+
+          float brokenBrush = smoothstep(.18,.72,grain*.72+fine*.45);
+          strokes *= .18+.78*brokenBrush;
+          strokes += smoothstep(.78,.97,grain)*.10;
+
+          vec3 deep = vec3(.002,.025,.050);
+          vec3 blue = vec3(.022,.132,.230);
+          vec3 sand = vec3(.70,.59,.43);
+          vec3 base = mix(deep,blue,clamp(.11+grain*.47+uv.y*.035,0.0,1.0));
+          float warm = clamp(strokes*(.83+uv.x*.16),0.0,.84);
+          vec3 color = mix(base,sand,warm);
+          float core = 1.0-smoothstep(.035,.14,currentRadius);
+          color = mix(color,deep,core*.70);
+          vec2 vignetteUv = (uv-.5)*vec2(.82,1.05);
+          float vignette = 1.0-smoothstep(.34,.76,length(vignetteUv));
+          color *= .68+.32*vignette;
+          color *= mix(.77,1.0,smoothstep(.02,.72,uv.x));
+          return color;
+        }
+
+        void main() {
+          float phase = u_time*.43;
+          vec2 point = a_uv;
+          point += vec2(.010*sin(phase),.004*cos(phase*.8));
+          point += curl(point,vec2(.50,.58),.50,.010,phase);
+          point += curl(point,vec2(.17,.78),.23,-.009,phase*1.1);
+          point += curl(point,vec2(.82,.80),.25,.006,phase*.9);
+          float sea = 1.0-smoothstep(.30,.67,point.y);
+          point.y += sin(point.x*18.0+phase*1.3)*.0028*sea;
+          point.x += sin(point.y*15.0-phase+a_seed*6.28)*.0013;
+
+          float imageAspect = 1.778;
+          vec2 cover = vec2(max(1.0,imageAspect/u_aspect),max(1.0,u_aspect/imageAspect));
+          gl_Position = vec4((point*2.0-1.0)*cover,0,1);
+          float spacing = max(u_viewport.x/560.0,u_viewport.y/315.0);
+          gl_PointSize = spacing*(1.42+.12*sin(phase*2.0+a_seed*17.0));
+          v_color = proceduralPaint(a_uv,phase)*(1.0+.06*sin(phase+a_seed*13.0));
+          v_alpha = .94;
+        }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        in vec3 v_color;
+        in float v_alpha;
+        out vec4 fragColor;
+        void main() {
+          float alpha=(1.0-smoothstep(.42,.70,length(gl_PointCoord-.5)))*v_alpha;
+          fragColor=vec4(v_color,alpha);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader=gl.createShader(type);
+        gl.shaderSource(shader,source); gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      }
+
+      try {
+        const program=gl.createProgram();
+        gl.attachShader(program,compile(gl.VERTEX_SHADER,vertexSource));
+        gl.attachShader(program,compile(gl.FRAGMENT_SHADER,fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        gl.useProgram(program);
+
+        const columns=560, rows=315, count=columns*rows;
+        const uv=new Float32Array(count*2), seeds=new Float32Array(count);
+        for (let y=0;y<rows;y++) for (let x=0;x<columns;x++) {
+          const i=y*columns+x;
+          uv[i*2]=(x+.5)/columns; uv[i*2+1]=(y+.5)/rows;
+          const n=Math.sin(i*12.9898+78.233)*43758.5453; seeds[i]=n-Math.floor(n);
+        }
+        function attribute(name,data,size) {
+          const buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+          gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+          const location=gl.getAttribLocation(program,name);
+          gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location,size,gl.FLOAT,false,0,0);
+        }
+        attribute('a_uv',uv,2); attribute('a_seed',seeds,1);
+
+        const time=gl.getUniformLocation(program,'u_time');
+        const aspect=gl.getUniformLocation(program,'u_aspect');
+        const viewport=gl.getUniformLocation(program,'u_viewport');
+        const start=performance.now();
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+        gl.clearColor(.004,.018,.043,1);
+
+        function render(now) {
+          const ratio=Math.min(devicePixelRatio||1,2);
+          const width=Math.max(1,Math.round(canvas.clientWidth*ratio));
+          const height=Math.max(1,Math.round(canvas.clientHeight*ratio));
+          if (canvas.width!==width||canvas.height!==height) {
+            canvas.width=width; canvas.height=height; gl.viewport(0,0,width,height);
+          }
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.uniform1f(time,(now-start)*.001); gl.uniform1f(aspect,width/height);
+          gl.uniform2f(viewport,width,height); gl.drawArrays(gl.POINTS,0,count);
+          requestAnimationFrame(render);
+        }
+        requestAnimationFrame(render);
+      } catch (error) {
+        console.error(error); fail(`Storm setup failed: ${error.message||error}`);
+      }
+    })();
+  </script>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+    (() => {
+      const canvas = document.querySelector('#foreground');
+      const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.Camera();
+      const clock = new THREE.Clock();
+
+      const ridgeHeight = x => -0.755
+        + Math.sin(x * 4.5 + 0.4) * 0.017
+        + Math.sin(x * 10.7 + 1.8) * 0.009
+        + Math.sin(x * 21.0) * 0.004;
+
+      const ridgeMaterials = [];
+      function addRidge(offset, topColor, bottomColor, opacity) {
+        const positions = [];
+        const edge = [];
+        const indices = [];
+        const steps = 180;
+        for (let index = 0; index <= steps; index++) {
+          const x = -1.02 + index / steps * 2.04;
+          positions.push(x, ridgeHeight(x) + offset, 0, x, -1.04, 0);
+          edge.push(1, 0);
+          if (index < steps) {
+            const vertex = index * 2;
+            indices.push(vertex, vertex + 1, vertex + 2, vertex + 1, vertex + 3, vertex + 2);
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('a_edge', new THREE.Float32BufferAttribute(edge, 1));
+        geometry.setIndex(indices);
+        const material = new THREE.ShaderMaterial({
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+          uniforms: {
+            u_time: { value: 0 },
+            u_top: { value: new THREE.Color(topColor) },
+            u_bottom: { value: new THREE.Color(bottomColor) },
+            u_opacity: { value: opacity }
+          },
+          vertexShader: `
+            attribute float a_edge;
+            uniform float u_time;
+            varying float v_edge;
+            void main() {
+              vec3 p = position;
+              p.y += sin(p.x * 5.2 + u_time * .28) * .0035 * a_edge;
+              gl_Position = vec4(p, 1.0);
+              v_edge = a_edge;
+            }
+          `,
+          fragmentShader: `
+            uniform vec3 u_top;
+            uniform vec3 u_bottom;
+            uniform float u_opacity;
+            varying float v_edge;
+            void main() {
+              gl_FragColor = vec4(mix(u_bottom, u_top, v_edge), u_opacity);
+            }
+          `
+        });
+        ridgeMaterials.push(material);
+        scene.add(new THREE.Mesh(geometry, material));
+      }
+      addRidge(0.020, 0x10314b, 0x020817, 0.70);
+      addRidge(-0.004, 0x071b31, 0x01050e, 0.97);
+
+      let particleSeed = 90210;
+      const random = () => {
+        particleSeed |= 0;
+        particleSeed = particleSeed + 0x6d2b79f5 | 0;
+        let value = Math.imul(particleSeed ^ particleSeed >>> 15, 1 | particleSeed);
+        value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+        return ((value ^ value >>> 14) >>> 0) / 4294967296;
+      };
+
+      const grassPositions = [];
+      const grassColors = [];
+      const grassWeights = [];
+      const grassPhases = [];
+      const grassSways = [];
+      const grassAlphas = [];
+
+      function addSegment(a, b, color, phase, sway, weights, alpha) {
+        grassPositions.push(a[0], a[1], 0, b[0], b[1], 0);
+        grassColors.push(...color, ...color);
+        grassWeights.push(weights[0], weights[1]);
+        grassPhases.push(phase, phase);
+        grassSways.push(sway, sway);
+        grassAlphas.push(alpha, alpha);
+      }
+
+      for (let index = 0; index < 3400; index++) {
+        const x = random() * 2 - 1;
+        const depth = Math.pow(random(), 0.86);
+        const root = ridgeHeight(x) - 0.006 - depth * (0.245 + random() * 0.035);
+        const height = 0.016 + depth * 0.084 + random() * 0.026;
+        const lean = (random() - 0.5) * height * 0.46;
+        const middle = [x + lean * 0.32, root + height * 0.55];
+        const tip = [x + lean, root + height];
+        const warm = random() > 0.89;
+        const color = warm
+          ? [0.19 + random() * 0.07, 0.105 + random() * 0.04, 0.035]
+          : [0.018 + (1 - depth) * 0.035, 0.065 + (1 - depth) * 0.075, 0.09 + (1 - depth) * 0.09];
+        const phase = random();
+        const sway = 0.0025 + height * 0.045;
+        const alpha = 0.40 + depth * 0.42;
+        addSegment([x, root], middle, color, phase, sway, [0, 0.55], alpha);
+        addSegment(middle, tip, color, phase, sway, [0.55, 1], alpha);
+      }
+
+      const pointPositions = [];
+      const pointColors = [];
+      const pointSizes = [];
+      const pointPhases = [];
+      const flowerFlags = [];
+      const pointSways = [];
+
+      function addPoint(x, y, color, size, phase, flower, sway = 0) {
+        pointPositions.push(x, y, 0);
+        pointColors.push(...color);
+        pointSizes.push(size);
+        pointPhases.push(phase);
+        flowerFlags.push(flower);
+        pointSways.push(sway);
+      }
+
+      for (let index = 0; index < 7200; index++) {
+        const x = random() * 2 - 1;
+        const top = ridgeHeight(x) - 0.004;
+        const y = -1.01 + Math.pow(random(), 0.78) * (top + 1.01);
+        const depth = (top - y) / (top + 1.01);
+        const warm = random() > 0.84;
+        const color = warm
+          ? [0.22 + random() * 0.14, 0.105 + random() * 0.07, 0.028]
+          : [0.018, 0.075 + (1 - depth) * 0.055, 0.13 + (1 - depth) * 0.07];
+        addPoint(x, y, color, 0.75 + random() * 1.35, random(), 0);
+      }
+
+      const flowerPalette = [
+        [0.82, 0.25, 0.025],
+        [0.90, 0.42, 0.055],
+        [0.67, 0.16, 0.020],
+        [0.84, 0.50, 0.12]
+      ];
+      const flowerClusters = [-0.82, -0.55, -0.08, 0.34, 0.72];
+      for (let index = 0; index < 128; index++) {
+        const clustered = random() < 0.72;
+        const center = flowerClusters[Math.floor(random() * flowerClusters.length)];
+        const x = THREE.MathUtils.clamp(
+          clustered ? center + (random() - 0.5) * (0.18 + random() * 0.18) : random() * 2 - 1,
+          -0.99,
+          0.99
+        );
+        const depth = Math.pow(random(), 1.18);
+        const root = ridgeHeight(x) - 0.008 - depth * (0.235 + random() * 0.025);
+        const height = 0.045 + depth * 0.073 + random() * 0.042;
+        const lean = (random() - 0.5) * (0.018 + height * 0.12);
+        const phase = random();
+        const sway = 0.004 + height * 0.035;
+        const middle = [x + lean * 0.28, root + height * 0.53];
+        const head = [x + lean, root + height];
+        const stemColor = random() > 0.55 ? [0.13, 0.14, 0.055] : [0.035, 0.12, 0.105];
+        addSegment([x, root], middle, stemColor, phase, sway, [0, 0.53], 0.78);
+        addSegment(middle, head, stemColor, phase, sway, [0.53, 1], 0.84);
+        if (random() > 0.42) {
+          const side = random() > 0.5 ? 1 : -1;
+          addSegment(
+            [x + lean * 0.2, root + height * 0.38],
+            [x + lean * 0.2 + side * (0.010 + random() * 0.013), root + height * (0.48 + random() * 0.09)],
+            stemColor, phase, sway, [0.38, 0.58], 0.68
+          );
+        }
+        const color = flowerPalette[Math.floor(random() * flowerPalette.length)];
+        addPoint(head[0], head[1], color, 4.3 + depth * 5.2 + random() * 2.5, phase, 1, sway);
+      }
+
+      const grassGeometry = new THREE.BufferGeometry();
+      grassGeometry.setAttribute('position', new THREE.Float32BufferAttribute(grassPositions, 3));
+      grassGeometry.setAttribute('a_color', new THREE.Float32BufferAttribute(grassColors, 3));
+      grassGeometry.setAttribute('a_weight', new THREE.Float32BufferAttribute(grassWeights, 1));
+      grassGeometry.setAttribute('a_phase', new THREE.Float32BufferAttribute(grassPhases, 1));
+      grassGeometry.setAttribute('a_sway', new THREE.Float32BufferAttribute(grassSways, 1));
+      grassGeometry.setAttribute('a_alpha', new THREE.Float32BufferAttribute(grassAlphas, 1));
+      const grassMaterial = new THREE.ShaderMaterial({
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        uniforms: { u_time: { value: 0 } },
+        vertexShader: `
+          attribute vec3 a_color;
+          attribute float a_weight;
+          attribute float a_phase;
+          attribute float a_sway;
+          attribute float a_alpha;
+          uniform float u_time;
+          varying vec3 v_color;
+          varying float v_alpha;
+          void main() {
+            vec3 p = position;
+            float wind = sin(u_time * .56 + a_phase * 6.28318 + p.x * 3.4);
+            p.x += wind * a_sway * a_weight * a_weight;
+            p.y += cos(u_time * .31 + a_phase * 9.0) * .0012 * a_weight;
+            gl_Position = vec4(p, 1.0);
+            v_color = a_color * (0.76 + a_weight * 0.34);
+            v_alpha = a_alpha;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 v_color;
+          varying float v_alpha;
+          void main() {
+            gl_FragColor = vec4(v_color, v_alpha);
+          }
+        `
+      });
+      scene.add(new THREE.LineSegments(grassGeometry, grassMaterial));
+
+      const pointGeometry = new THREE.BufferGeometry();
+      pointGeometry.setAttribute('position', new THREE.Float32BufferAttribute(pointPositions, 3));
+      pointGeometry.setAttribute('a_color', new THREE.Float32BufferAttribute(pointColors, 3));
+      pointGeometry.setAttribute('a_size', new THREE.Float32BufferAttribute(pointSizes, 1));
+      pointGeometry.setAttribute('a_phase', new THREE.Float32BufferAttribute(pointPhases, 1));
+      pointGeometry.setAttribute('a_flower', new THREE.Float32BufferAttribute(flowerFlags, 1));
+      pointGeometry.setAttribute('a_sway', new THREE.Float32BufferAttribute(pointSways, 1));
+
+      const pointMaterial = new THREE.ShaderMaterial({
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        uniforms: {
+          u_time: { value: 0 },
+          u_pixel_ratio: { value: renderer.getPixelRatio() }
+        },
+        vertexShader: `
+          attribute vec3 a_color;
+          attribute float a_size;
+          attribute float a_phase;
+          attribute float a_flower;
+          attribute float a_sway;
+          uniform float u_time;
+          uniform float u_pixel_ratio;
+          varying vec3 v_color;
+          varying float v_alpha;
+          varying float v_flower;
+          varying float v_phase;
+          void main() {
+            vec3 p = position;
+            float wind = sin(u_time * .56 + a_phase * 6.28318 + p.x * 3.4);
+            p.x += wind * a_sway * a_flower;
+            p.y += cos(u_time * .31 + a_phase * 9.0) * .0012 * a_flower;
+            gl_Position = vec4(p, 1.0);
+            gl_PointSize = a_size * u_pixel_ratio * (0.97 + .035 * sin(u_time * 1.2 + a_phase * 17.0));
+            v_color = a_color;
+            v_alpha = mix(.18 + .10 * sin(u_time * .7 + a_phase * 19.0), .94, a_flower);
+            v_flower = a_flower;
+            v_phase = a_phase;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 v_color;
+          varying float v_alpha;
+          varying float v_flower;
+          varying float v_phase;
+          void main() {
+            vec2 p = (gl_PointCoord - .5) * 2.0;
+            if (v_flower < .5) {
+              float alpha = (1.0 - smoothstep(.1, 1.0, length(p))) * v_alpha;
+              if (alpha < .015) discard;
+              gl_FragColor = vec4(v_color, alpha);
+              return;
+            }
+            float petals = 0.0;
+            for (int index = 0; index < 7; index++) {
+              float fi = float(index);
+              float angle = fi * .897598 + v_phase * 1.7;
+              vec2 axis = vec2(cos(angle), sin(angle));
+              float offset = .38 + .035 * sin(v_phase * 31.0 + fi * 2.3);
+              vec2 delta = p - axis * offset;
+              vec2 petal = vec2(dot(delta, axis), dot(delta, vec2(-axis.y, axis.x)));
+              float shape = length(petal / vec2(.43 + .035 * sin(fi + v_phase * 9.0), .205));
+              petals = max(petals, 1.0 - smoothstep(.72, 1.05, shape));
+            }
+            float center = 1.0 - smoothstep(.12, .25, length(p));
+            float alpha = max(petals * .92, center) * v_alpha;
+            if (alpha < .015) discard;
+            vec3 color = mix(v_color, vec3(.48, .13, .015), center);
+            color *= .94 + .08 * p.y + .035 * sin(v_phase * 43.0);
+            gl_FragColor = vec4(color, alpha);
+          }
+        `
+      });
+      scene.add(new THREE.Points(pointGeometry, pointMaterial));
+
+      function resize() {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        if (canvas.width !== Math.round(width * renderer.getPixelRatio())
+            || canvas.height !== Math.round(height * renderer.getPixelRatio())) {
+          renderer.setSize(width, height, false);
+        }
+      }
+
+      function render() {
+        resize();
+        const elapsed = clock.getElapsedTime();
+        ridgeMaterials.forEach(material => { material.uniforms.u_time.value = elapsed; });
+        grassMaterial.uniforms.u_time.value = elapsed;
+        pointMaterial.uniforms.u_time.value = elapsed;
+        renderer.render(scene, camera);
+        requestAnimationFrame(render);
+      }
+      render();
+    })();
+  </script>
+</body>
+</html>

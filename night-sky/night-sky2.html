@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Procedural Storm Sea</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #020d1e; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #message { position: fixed; inset: 0; display: none; place-items: center; padding: 2rem; color: #d8bb8c; font: 15px system-ui; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A procedural particle painting of a storm sea, boat, and flower"></canvas>
+  <div id="message" role="alert"></div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const message = document.querySelector('#message');
+      const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false });
+
+      function fail(text) {
+        canvas.hidden = true;
+        message.textContent = text;
+        message.style.display = 'grid';
+      }
+      if (!gl) { fail('This animation requires WebGL 2.'); return; }
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+        in vec2 a_uv;
+        in float a_seed;
+        uniform float u_time;
+        uniform float u_aspect;
+        uniform vec2 u_viewport;
+        out vec3 v_color;
+        out float v_alpha;
+
+        float hash(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+        float noise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1,0)), f.x),
+                     mix(hash(i + vec2(0,1)), hash(i + vec2(1)), f.x), f.y);
+        }
+        float fbm(vec2 p) {
+          float value = 0.0, amplitude = 0.5;
+          for (int i = 0; i < 4; i++) {
+            value += noise(p) * amplitude;
+            p = mat2(1.62, 1.18, -1.18, 1.62) * p;
+            amplitude *= 0.48;
+          }
+          return value;
+        }
+        float segment(vec2 p, vec2 a, vec2 b) {
+          vec2 pa = p-a, ba = b-a;
+          float h = clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0);
+          return length(pa-ba*h);
+        }
+        float ink(float distanceValue, float width) {
+          return smoothstep(width, width * 0.22, distanceValue);
+        }
+        vec2 curl(vec2 p, vec2 center, float radius, float force, float phase) {
+          vec2 d = p-center;
+          float r = length(d);
+          float falloff = smoothstep(radius, 0.0, r);
+          return vec2(-d.y,d.x)/max(r,.025) * falloff * force * sin(phase+r*9.0);
+        }
+
+        float spiral(vec2 uv, vec2 center, float scale, float phase) {
+          vec2 q = uv-center;
+          q.x *= u_aspect;
+          float r = length(q)/scale;
+          float a = atan(q.y,q.x);
+          float fray = fbm(q*vec2(16.0,22.0));
+          float curve = a-r*8.7+phase+(fray-.5)*.55;
+          float crest = ink(abs(sin(curve)), .27);
+          float shoulder = ink(abs(sin(curve+.34)), .13)*.58;
+          float threads = ink(abs(sin(a*4.0-r*33.0+phase*.7+fray*1.8)), .13) * .42;
+          float spray = smoothstep(.73,.96,noise(q*vec2(105.0,78.0)+fray));
+          return (crest+shoulder+threads+spray*.28)*smoothstep(1.10,.10,r)*smoothstep(.045,.15,r);
+        }
+
+        vec3 proceduralPaint(vec2 uv, float t) {
+          float grain = fbm(uv*vec2(55.0,34.0));
+          float fine = noise(uv*vec2(310.0,180.0)+a_seed*3.0);
+          float strokes = 0.0;
+
+          strokes += spiral(uv, vec2(.49,.52), .47, .18) * 1.18;
+          strokes += spiral(uv, vec2(.17,.78), .20, -1.0) * .76;
+          strokes += spiral(uv, vec2(.23,.39), .16, .65) * .76;
+
+          vec2 current = uv-vec2(.49,.52);
+          current.x *= u_aspect;
+          float currentRadius = length(current);
+          float currentAngle = atan(current.y,current.x);
+          float sweep = ink(abs(sin(currentAngle*1.5-currentRadius*14.0+grain*.8)),.28);
+          strokes += sweep*smoothstep(.92,.12,currentRadius)*smoothstep(.05,.14,currentRadius)*.62;
+          float filaments = ink(abs(sin(currentAngle*7.0-currentRadius*66.0+grain*5.5)),.20);
+          strokes += filaments*smoothstep(.86,.10,currentRadius)*smoothstep(.055,.14,currentRadius)*.46;
+
+          float lower = 1.0-smoothstep(.28,.66,uv.y);
+          float bands = ink(abs(sin(uv.y*52.0 + uv.x*11.0 + grain*5.0)), .22);
+          strokes += bands*lower*.62;
+
+          vec2 fp = uv-vec2(.82,.80);
+          fp.x *= u_aspect;
+          float fa = atan(fp.y,fp.x), fr = length(fp);
+          float petalFray=(noise(fp*180.0)-.5)*.012;
+          float flower = ink(abs(fr-(.105+.034*cos(fa*8.0)+petalFray)),.014);
+          flower += ink(abs(sin(fa*4.0+petalFray*18.0)),.17)*smoothstep(.13,.018,fr)*.72;
+          flower += ink(fr,.018)*.7;
+          strokes += flower;
+
+          vec2 b = uv-vec2(.72,.42);
+          b.x *= u_aspect;
+          b /= .78;
+          float boat = 0.0;
+          boat += ink(segment(b,vec2(-.17,-.035),vec2(.17,-.035)),.008);
+          boat += ink(segment(b,vec2(-.17,-.035),vec2(-.08,-.09)),.008);
+          boat += ink(segment(b,vec2(-.08,-.09),vec2(.11,-.085)),.008);
+          boat += ink(segment(b,vec2(.11,-.085),vec2(.17,-.035)),.008);
+          boat += ink(segment(b,vec2(0,-.02),vec2(0,.18)),.007);
+          boat += ink(segment(b,vec2(0,.17),vec2(-.14,-.01)),.007);
+          boat += ink(segment(b,vec2(-.14,-.01),vec2(0,-.01)),.007);
+          boat += ink(segment(b,vec2(.01,.16),vec2(.12,0)),.007);
+          boat += ink(segment(b,vec2(.12,0),vec2(.01,0)),.007);
+          strokes += min(boat,1.0)*1.25;
+
+          float brokenBrush = smoothstep(.18,.72,grain*.72+fine*.45);
+          strokes *= .28+1.05*brokenBrush;
+          strokes += smoothstep(.70,.95,grain)*.24;
+
+          vec3 deep = vec3(.007,.047,.098);
+          vec3 blue = vec3(.030,.175,.310);
+          vec3 sand = vec3(.76,.62,.46);
+          vec3 base = mix(deep,blue,clamp(.18+grain*.72+uv.y*.08,0.0,1.0));
+          return mix(base,sand,clamp(strokes,0.0,.92));
+        }
+
+        void main() {
+          float phase = u_time*.43;
+          vec2 point = a_uv;
+          point += vec2(.010*sin(phase),.004*cos(phase*.8));
+          point += curl(point,vec2(.49,.52),.50,.014,phase);
+          point += curl(point,vec2(.17,.78),.23,-.009,phase*1.1);
+          point += curl(point,vec2(.82,.80),.25,.006,phase*.9);
+          float sea = 1.0-smoothstep(.30,.67,point.y);
+          point.y += sin(point.x*18.0+phase*1.7)*.0045*sea;
+          point.x += sin(point.y*15.0-phase+a_seed*6.28)*.0013;
+
+          float imageAspect = 1.778;
+          vec2 cover = vec2(max(1.0,imageAspect/u_aspect),max(1.0,u_aspect/imageAspect));
+          gl_Position = vec4((point*2.0-1.0)*cover,0,1);
+          float spacing = max(u_viewport.x/560.0,u_viewport.y/315.0);
+          gl_PointSize = spacing*(1.42+.12*sin(phase*2.0+a_seed*17.0));
+          v_color = proceduralPaint(a_uv,phase)*(1.0+.06*sin(phase+a_seed*13.0));
+          v_alpha = .94;
+        }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        in vec3 v_color;
+        in float v_alpha;
+        out vec4 fragColor;
+        void main() {
+          float alpha=(1.0-smoothstep(.42,.70,length(gl_PointCoord-.5)))*v_alpha;
+          fragColor=vec4(v_color,alpha);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader=gl.createShader(type);
+        gl.shaderSource(shader,source); gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      }
+
+      try {
+        const program=gl.createProgram();
+        gl.attachShader(program,compile(gl.VERTEX_SHADER,vertexSource));
+        gl.attachShader(program,compile(gl.FRAGMENT_SHADER,fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        gl.useProgram(program);
+
+        const columns=560, rows=315, count=columns*rows;
+        const uv=new Float32Array(count*2), seeds=new Float32Array(count);
+        for (let y=0;y<rows;y++) for (let x=0;x<columns;x++) {
+          const i=y*columns+x;
+          uv[i*2]=(x+.5)/columns; uv[i*2+1]=(y+.5)/rows;
+          const n=Math.sin(i*12.9898+78.233)*43758.5453; seeds[i]=n-Math.floor(n);
+        }
+        function attribute(name,data,size) {
+          const buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+          gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+          const location=gl.getAttribLocation(program,name);
+          gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location,size,gl.FLOAT,false,0,0);
+        }
+        attribute('a_uv',uv,2); attribute('a_seed',seeds,1);
+
+        const time=gl.getUniformLocation(program,'u_time');
+        const aspect=gl.getUniformLocation(program,'u_aspect');
+        const viewport=gl.getUniformLocation(program,'u_viewport');
+        const start=performance.now();
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+        gl.clearColor(.004,.018,.043,1);
+
+        function render(now) {
+          const ratio=Math.min(devicePixelRatio||1,2);
+          const width=Math.max(1,Math.round(canvas.clientWidth*ratio));
+          const height=Math.max(1,Math.round(canvas.clientHeight*ratio));
+          if (canvas.width!==width||canvas.height!==height) {
+            canvas.width=width; canvas.height=height; gl.viewport(0,0,width,height);
+          }
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.uniform1f(time,(now-start)*.001); gl.uniform1f(aspect,width/height);
+          gl.uniform2f(viewport,width,height); gl.drawArrays(gl.POINTS,0,count);
+          requestAnimationFrame(render);
+        }
+        requestAnimationFrame(render);
+      } catch (error) {
+        console.error(error); fail(`Storm setup failed: ${error.message||error}`);
+      }
+    })();
+  </script>
+</body>
+</html>

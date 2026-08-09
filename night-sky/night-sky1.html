@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spiral Particle Sea</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: radial-gradient(circle at 48% 51%, #07345b, #03162e 54%, #010918); }
+    canvas { display: block; width: 100%; height: 100%; }
+    #message { position: fixed; inset: 0; display: none; place-items: center; color: #d9bd91; font: 15px system-ui; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A storm sea formed from animated spiral particles"></canvas>
+  <div id="message" role="alert"></div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const message = document.querySelector('#message');
+      const gl = canvas.getContext('webgl2', { alpha: true, antialias: false, depth: false });
+      const fail = (text) => { canvas.hidden = true; message.textContent = text; message.style.display = 'grid'; };
+      if (!gl) { fail('This animation requires WebGL 2.'); return; }
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+        in vec2 a_position;
+        in vec2 a_tangent;
+        in vec3 a_color;
+        in float a_size;
+        in float a_phase;
+        uniform float u_time;
+        uniform float u_aspect;
+        uniform float u_pixel_ratio;
+        out vec3 v_color;
+        out float v_alpha;
+
+        mat2 rotate2D(float a) {
+          float c=cos(a), s=sin(a);
+          return mat2(c,-s,s,c);
+        }
+
+        void main() {
+          vec2 center=vec2(.485,.505);
+          vec2 q=a_position-center;
+          float radius=length(q);
+          float tide=sin(u_time*.34);
+          float rotation=.026*sin(u_time*.31+radius*8.0+a_phase*.7);
+          rotation*=1.0-smoothstep(.18,.82,radius);
+          vec2 position=center+rotate2D(rotation)*q;
+
+          position+=a_tangent*(.0045*sin(u_time*.72+a_phase*6.283)+.0025*tide);
+          position.x+=.009*tide;
+          position.y+=.0035*cos(u_time*.27+position.x*8.0);
+
+          const float artAspect=1.778;
+          vec2 cover=vec2(max(1.0,artAspect/u_aspect),max(1.0,u_aspect/artAspect));
+          gl_Position=vec4((position*2.0-1.0)*cover,0,1);
+          gl_PointSize=a_size*u_pixel_ratio*(.88+.22*sin(u_time*1.1+a_phase*15.0));
+          v_color=a_color*(.84+.24*sin(u_time*.46+a_phase*12.0));
+          v_alpha=.58+.34*sin(a_phase*19.0+u_time*.38);
+        }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        in vec3 v_color;
+        in float v_alpha;
+        out vec4 fragColor;
+        void main() {
+          float alpha=smoothstep(.52,.08,length(gl_PointCoord-.5))*v_alpha;
+          if(alpha<.015) discard;
+          fragColor=vec4(v_color,alpha);
+        }
+      `;
+
+      function compile(type,source) {
+        const shader=gl.createShader(type); gl.shaderSource(shader,source); gl.compileShader(shader);
+        if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      }
+
+      let seed=8262026;
+      const random=()=>{ seed|=0; seed=seed+0x6d2b79f5|0; let t=Math.imul(seed^seed>>>15,1|seed); t=t+Math.imul(t^t>>>7,61|t)^t; return((t^t>>>14)>>>0)/4294967296; };
+      const range=(a,b)=>a+(b-a)*random();
+      const jitter=(amount)=>(random()+random()+random()-1.5)*amount;
+      const positions=[], tangents=[], colors=[], sizes=[], phases=[];
+      const gold=[.66,.48,.30], pale=[.86,.68,.47], blue=[.035,.22,.39], deep=[.016,.11,.23];
+
+      function add(x,y,tx,ty,goldChance=.45,size=2) {
+        const length=Math.hypot(tx,ty)||1;
+        positions.push(x,y); tangents.push(tx/length,ty/length);
+        const palette=random()<goldChance?(random()<.35?pale:gold):(random()<.42?blue:deep);
+        const brightness=range(.72,1.18);
+        colors.push(palette[0]*brightness,palette[1]*brightness,palette[2]*brightness);
+        sizes.push(size*range(.72,1.34)); phases.push(random());
+      }
+
+      function spiral(cx,cy,count,r0,r1,turns,startAngle,yScale,goldChance,width) {
+        const angularSpeed=turns*Math.PI*2;
+        for(let i=0;i<count;i++) {
+          const t=random();
+          const lane=jitter(width)*(0.35+t*.75);
+          const radius=r0+(r1-r0)*t+lane;
+          const angle=startAngle+angularSpeed*t+jitter(.018);
+          const x=cx+Math.cos(angle)*radius;
+          const y=cy+Math.sin(angle)*radius*yScale;
+          const dr=r1-r0;
+          const tx=dr*Math.cos(angle)-radius*Math.sin(angle)*angularSpeed;
+          const ty=(dr*Math.sin(angle)+radius*Math.cos(angle)*angularSpeed)*yScale;
+          add(x,y,tx,ty,goldChance,range(1.0,2.8));
+        }
+      }
+
+      function segment(a,b,count,goldChance=.8,width=.006) {
+        const tx=b[0]-a[0], ty=b[1]-a[1], length=Math.hypot(tx,ty);
+        const nx=-ty/length, ny=tx/length;
+        for(let i=0;i<count;i++) {
+          const t=random(), offset=jitter(width);
+          add(a[0]+tx*t+nx*offset,a[1]+ty*t+ny*offset,tx,ty,goldChance,range(1.1,2.7));
+        }
+      }
+
+      // The dominant wave: real particles distributed along widening spiral lanes.
+      spiral(.47,.50,72000,.025,.54,1.23,-.28,.66,.32,.050);
+      spiral(.47,.50,26000,.10,.70,.72,-1.38,.62,.20,.060);
+      spiral(.18,.79,13000,.012,.145,1.58,-.5,.82,.34,.025);
+      spiral(.21,.39,11000,.014,.13,1.28,.18,.72,.38,.023);
+
+      // Layered lower currents follow long, imperfect wave paths.
+      for(let i=0;i<30000;i++) {
+        const x=random();
+        const lane=Math.floor(random()*25);
+        const base=.035+lane*.0145;
+        const phase=lane*.63;
+        const y=base+.030*Math.sin(x*8.0+phase)+jitter(.010);
+        const dy=.24*Math.cos(x*8.0+phase);
+        add(x,y,1,dy,range(.22,.52),range(.8,2.25));
+      }
+
+      // Loose atmospheric currents fill the negative space without hiding the spiral.
+      for(let i=0;i<36000;i++) {
+        const angle=random()*Math.PI*2;
+        const radius=range(.16,.76);
+        const x=.49+Math.cos(angle)*radius;
+        const y=.52+Math.sin(angle)*radius*.62;
+        add(x+jitter(.018),y+jitter(.012),-Math.sin(angle),Math.cos(angle)*.62,.16,range(.65,1.65));
+      }
+
+      // Fine blue pigment covers the entire frame and follows the same central circulation.
+      for(let i=0;i<70000;i++) {
+        const x=random(), y=random();
+        const dx=x-.49, dy=(y-.52)/.62;
+        const radius=Math.hypot(dx,dy);
+        add(x,y,-dy,dx*.62,.035,range(.55,1.45)*(1.15-.35*Math.min(radius,1)));
+      }
+
+      const boat=[
+        [[.64,.37],[.81,.37]], [[.64,.37],[.68,.325]], [[.68,.325],[.77,.33]], [[.77,.33],[.81,.37]],
+        [[.715,.38],[.715,.59]], [[.715,.58],[.65,.40]], [[.65,.40],[.715,.40]],
+        [[.722,.56],[.775,.405]], [[.775,.405],[.722,.405]], [[.67,.31],[.79,.315]]
+      ];
+      for(const line of boat) segment(line[0],line[1],950,.88,.005);
+
+      // Eight-petal flower/star in the upper-right, also made from moving particles.
+      for(let i=0;i<10500;i++) {
+        const angle=random()*Math.PI*2;
+        const radius=.070+.035*Math.cos(angle*8.0)+jitter(.011);
+        const derivative=-.28*Math.sin(angle*8.0);
+        const x=.825+Math.cos(angle)*radius;
+        const y=.815+Math.sin(angle)*radius*1.18;
+        const tx=derivative*Math.cos(angle)-radius*Math.sin(angle);
+        const ty=(derivative*Math.sin(angle)+radius*Math.cos(angle))*1.18;
+        add(x,y,tx,ty,.68,range(.9,2.45));
+      }
+
+      try {
+        const program=gl.createProgram();
+        gl.attachShader(program,compile(gl.VERTEX_SHADER,vertexSource));
+        gl.attachShader(program,compile(gl.FRAGMENT_SHADER,fragmentSource));
+        gl.linkProgram(program);
+        if(!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        gl.useProgram(program);
+        function attribute(name,data,size) {
+          const buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+          gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+          const location=gl.getAttribLocation(program,name); gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location,size,gl.FLOAT,false,0,0);
+        }
+        attribute('a_position',positions,2); attribute('a_tangent',tangents,2);
+        attribute('a_color',colors,3); attribute('a_size',sizes,1); attribute('a_phase',phases,1);
+        const time=gl.getUniformLocation(program,'u_time');
+        const aspect=gl.getUniformLocation(program,'u_aspect');
+        const pixelRatio=gl.getUniformLocation(program,'u_pixel_ratio');
+        const started=performance.now();
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE); gl.clearColor(0,0,0,0);
+        function render(now) {
+          const ratio=Math.min(devicePixelRatio||1,2), width=Math.round(canvas.clientWidth*ratio), height=Math.round(canvas.clientHeight*ratio);
+          if(canvas.width!==width||canvas.height!==height){ canvas.width=width; canvas.height=height; gl.viewport(0,0,width,height); }
+          gl.clear(gl.COLOR_BUFFER_BIT); gl.uniform1f(time,(now-started)*.001);
+          gl.uniform1f(aspect,width/height); gl.uniform1f(pixelRatio,ratio);
+          gl.drawArrays(gl.POINTS,0,sizes.length); requestAnimationFrame(render);
+        }
+        requestAnimationFrame(render);
+      } catch(error) { console.error(error); fail(`Storm setup failed: ${error.message||error}`); }
+    })();
+  </script>
+</body>
+</html>

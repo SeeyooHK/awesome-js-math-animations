@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morphing Particle Storm</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 52% 50%, #07345a 0%, #031a35 34%, #010817 78%),
+        #010817;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #message {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 2rem;
+      color: #e4bd78;
+      font: 500 0.95rem/1.5 system-ui, sans-serif;
+      text-align: center;
+      background: #010817;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A particle storm morphing between waves, a sailboat, and flowers"></canvas>
+  <div id="message" role="alert"></div>
+
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const message = document.querySelector('#message');
+      const gl = canvas.getContext('webgl2', {
+        alpha: true,
+        antialias: false,
+        depth: false,
+        powerPreference: 'high-performance'
+      });
+
+      function fail(text) {
+        canvas.hidden = true;
+        message.textContent = text;
+        message.style.display = 'grid';
+      }
+
+      if (!gl) {
+        fail('This animation requires WebGL 2.');
+        return;
+      }
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+
+        in vec2 a_from;
+        in vec2 a_to;
+        in vec3 a_color;
+        in float a_size;
+        in float a_phase;
+
+        uniform float u_time;
+        uniform float u_aspect;
+        uniform float u_pixel_ratio;
+
+        out vec3 v_color;
+        out float v_alpha;
+
+        mat2 rotate2D(float a) {
+          float c = cos(a);
+          float s = sin(a);
+          return mat2(c, -s, s, c);
+        }
+
+        void main() {
+          float rawMorph = 0.5 - 0.5 * cos(u_time * 0.34);
+          float morph = rawMorph * rawMorph * (3.0 - 2.0 * rawMorph);
+          vec2 position = mix(a_from, a_to, morph);
+          vec2 center = mix(vec2(0.055, 0.025), vec2(-0.075, 0.045), morph);
+          vec2 relative = position - center;
+          float radius = length(relative);
+
+          float circulation = u_time * 0.018
+            + sin(u_time * 0.31 + a_phase * 6.28318) * 0.034;
+          circulation *= 1.0 - smoothstep(0.12, 1.05, radius);
+          relative = rotate2D(circulation) * relative;
+          position = center + relative;
+
+          float turbulence = sin(
+            position.x * 19.0
+            + position.y * 13.0
+            + u_time * 0.72
+            + a_phase * 9.0
+          );
+          position += vec2(
+            cos(a_phase * 31.0 + u_time * 0.21),
+            sin(a_phase * 23.0 - u_time * 0.18)
+          ) * turbulence * 0.0028;
+
+          vec2 clipPosition = vec2(
+            position.x * 2.0 / u_aspect,
+            position.y * 2.0
+          );
+          gl_Position = vec4(clipPosition, 0.0, 1.0);
+          gl_PointSize = a_size * u_pixel_ratio
+            * (0.82 + 0.28 * sin(u_time * 1.7 + a_phase * 21.0));
+
+          float pulse = 0.82 + 0.22 * sin(u_time * 0.9 + a_phase * 17.0);
+          v_color = a_color * pulse;
+          v_alpha = 0.62 + 0.34 * sin(a_phase * 37.0 + u_time * 0.55);
+        }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+
+        in vec3 v_color;
+        in float v_alpha;
+        out vec4 fragColor;
+
+        void main() {
+          vec2 point = gl_PointCoord - 0.5;
+          float distanceFromCenter = length(point);
+          float alpha = smoothstep(0.5, 0.08, distanceFromCenter) * v_alpha;
+          if (alpha < 0.015) discard;
+          fragColor = vec4(v_color, alpha);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const error = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(error);
+        }
+        return shader;
+      }
+
+      function mulberry32(seed) {
+        return () => {
+          seed |= 0;
+          seed = seed + 0x6d2b79f5 | 0;
+          let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+          value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+          return ((value ^ value >>> 14) >>> 0) / 4294967296;
+        };
+      }
+
+      const random = mulberry32(8262026);
+      const range = (minimum, maximum) => minimum + (maximum - minimum) * random();
+      const jitter = (amount) => (random() + random() + random() - 1.5) * amount;
+
+      function rotatePoint(x, y, angle) {
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        return [x * cosine - y * sine, x * sine + y * cosine];
+      }
+
+      function sampleSegment(segments, center, scale, angle) {
+        const segment = segments[Math.floor(random() * segments.length)];
+        const progress = random();
+        let x = segment[0] + (segment[2] - segment[0]) * progress;
+        let y = segment[1] + (segment[3] - segment[1]) * progress;
+        [x, y] = rotatePoint(x * scale, y * scale, angle);
+        return [center[0] + x + jitter(0.003), center[1] + y + jitter(0.003)];
+      }
+
+      const boatSegments = [
+        [0.00, -0.03, 0.00, 0.18],
+        [0.00, 0.17, -0.18, -0.01],
+        [-0.18, -0.01, 0.00, -0.01],
+        [0.00, 0.16, 0.15, 0.00],
+        [0.15, 0.00, 0.00, 0.00],
+        [-0.21, -0.04, 0.21, -0.04],
+        [-0.21, -0.04, -0.11, -0.105],
+        [-0.11, -0.105, 0.13, -0.095],
+        [0.13, -0.095, 0.21, -0.04],
+        [-0.16, -0.125, 0.19, -0.115]
+      ];
+
+      const from = [];
+      const to = [];
+      const colors = [];
+      const sizes = [];
+      const phases = [];
+
+      function addParticle(fromPoint, toPoint, color, size = range(1.0, 2.7)) {
+        from.push(fromPoint[0], fromPoint[1]);
+        to.push(toPoint[0], toPoint[1]);
+        colors.push(color[0], color[1], color[2]);
+        sizes.push(size);
+        phases.push(random());
+      }
+
+      const blueDark = [0.025, 0.17, 0.31];
+      const blueLight = [0.075, 0.36, 0.58];
+      const goldDark = [0.48, 0.31, 0.14];
+      const goldLight = [0.98, 0.73, 0.39];
+
+      for (let index = 0; index < 34000; index++) {
+        const radius = 0.06 + Math.pow(random(), 0.72) * 1.02;
+        const baseAngle = random() * Math.PI * 2;
+        const lane = jitter(0.075);
+        const angleA = baseAngle + radius * 4.7 + lane;
+        const angleB = baseAngle + radius * 5.75 + 0.62 + lane * 1.2;
+        const fromPoint = [
+          0.055 + Math.cos(angleA) * radius,
+          0.025 + Math.sin(angleA) * radius * 0.54
+        ];
+        const toPoint = [
+          -0.075 + Math.cos(angleB) * radius * 1.02,
+          0.045 + Math.sin(angleB) * radius * 0.57
+        ];
+        const gold = random() > 0.58;
+        const brightness = range(0.72, 1.18);
+        const baseColor = gold
+          ? (random() > 0.58 ? goldLight : goldDark)
+          : (random() > 0.52 ? blueLight : blueDark);
+        addParticle(
+          fromPoint,
+          toPoint,
+          baseColor.map((channel) => channel * brightness),
+          range(0.95, gold ? 2.65 : 2.15)
+        );
+      }
+
+      for (let index = 0; index < 12000; index++) {
+        const progress = random();
+        const branch = Math.floor(random() * 5) - 2;
+        const radius = 0.11 + progress * 0.74 + jitter(0.012);
+        const angleA = -0.28 + radius * 9.25 + branch * 0.068;
+        const angleB = 0.32 + radius * 10.15 + branch * 0.074;
+        addParticle(
+          [0.055 + Math.cos(angleA) * radius, 0.025 + Math.sin(angleA) * radius * 0.55],
+          [-0.075 + Math.cos(angleB) * radius, 0.045 + Math.sin(angleB) * radius * 0.58],
+          random() > 0.24 ? goldLight : blueLight,
+          range(1.25, 3.2)
+        );
+      }
+
+      for (let index = 0; index < 4200; index++) {
+        const source = sampleSegment(boatSegments, [0.54, 0.075], 0.92, -0.08);
+        const target = sampleSegment(boatSegments, [0.36, -0.015], 1.03, 0.055);
+        addParticle(source, target, random() > 0.3 ? goldLight : goldDark, range(1.1, 2.9));
+      }
+
+      for (let index = 0; index < 4800; index++) {
+        const angle = random() * Math.PI * 2;
+        const radiusA = 0.075 + Math.cos(angle * 7.0) * 0.038 + jitter(0.009);
+        const radiusB = 0.092 + Math.cos(angle * 10.0) * 0.045 + jitter(0.011);
+        addParticle(
+          [-0.49 + Math.cos(angle) * radiusA, 0.27 + Math.sin(angle) * radiusA],
+          [0.55 + Math.cos(angle + 0.35) * radiusB, 0.32 + Math.sin(angle + 0.35) * radiusB],
+          random() > 0.22 ? goldLight : goldDark,
+          range(1.1, 3.0)
+        );
+      }
+
+      for (let index = 0; index < 2800; index++) {
+        const loop = index % 2;
+        const angle = random() * Math.PI * 2;
+        const sourceCenter = [-0.34 + loop * 0.09, -0.16];
+        const targetCenter = [-0.54 + loop * 0.11, -0.10];
+        const sourceRadius = 0.055 + jitter(0.007);
+        const targetRadius = 0.065 + jitter(0.008);
+        addParticle(
+          [sourceCenter[0] + Math.cos(angle) * sourceRadius, sourceCenter[1] + Math.sin(angle) * sourceRadius],
+          [targetCenter[0] + Math.cos(angle) * targetRadius, targetCenter[1] + Math.sin(angle) * targetRadius],
+          random() > 0.35 ? goldLight : goldDark,
+          range(1.0, 2.7)
+        );
+      }
+
+      try {
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+        gl.useProgram(program);
+
+        function bindAttribute(name, data, components) {
+          const buffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+          const location = gl.getAttribLocation(program, name);
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, components, gl.FLOAT, false, 0, 0);
+        }
+
+        bindAttribute('a_from', from, 2);
+        bindAttribute('a_to', to, 2);
+        bindAttribute('a_color', colors, 3);
+        bindAttribute('a_size', sizes, 1);
+        bindAttribute('a_phase', phases, 1);
+
+        const timeLocation = gl.getUniformLocation(program, 'u_time');
+        const aspectLocation = gl.getUniformLocation(program, 'u_aspect');
+        const pixelRatioLocation = gl.getUniformLocation(program, 'u_pixel_ratio');
+        const particleCount = sizes.length;
+        const startTime = performance.now();
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+
+        function resize() {
+          const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+          const width = Math.max(1, Math.round(canvas.clientWidth * pixelRatio));
+          const height = Math.max(1, Math.round(canvas.clientHeight * pixelRatio));
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+            gl.viewport(0, 0, width, height);
+          }
+          return pixelRatio;
+        }
+
+        function render(now) {
+          const pixelRatio = resize();
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.uniform1f(timeLocation, (now - startTime) * 0.001);
+          gl.uniform1f(aspectLocation, canvas.width / canvas.height);
+          gl.uniform1f(pixelRatioLocation, pixelRatio);
+          gl.drawArrays(gl.POINTS, 0, particleCount);
+          requestAnimationFrame(render);
+        }
+
+        requestAnimationFrame(render);
+      } catch (error) {
+        console.error(error);
+        fail('The particle animation could not be started on this device.');
+      }
+    })();
+  </script>
+</body>
+</html>
