@@ -14,10 +14,12 @@ This repository contains a collection of generative art and animations created u
   * *Credit:* [@mathelirium](https://x.com/mathelirium)
 * **[infinite-particles](infinite-particles/)** - variations
 * **[waving-grass](waving-grass.html/)**
-* **[liquid-metal-tao](liquid-metal-tao.html/)**
+* **[liquid-metal-tao](liquid-metal-tao.html)**
   * *Credit:* [@chuyouqi](https://x.com/chuyouqi)
-* **[Chromatic-Flow](Chromatic-Flow.html/)**
+* **[Chromatic-Flow](Chromatic-Flow.html)**
   * *Credit:* [@chuyouqi](https://x.com/chuyouqi)
 * **[Alien-SDF](Alien-SDF.html)**
   * *Credit:* [@DrinLajci](https://x.com/DrinLajci)
 * **[mico-SDF](mico-SDF.html/)** variation of [Alien-SDF](Alien-SDF.html)
+* **[radial-choreography](radial-choreography.html)**
+  * *Credit:* [@chuyouqi](https://x.com/chuyouqi)
