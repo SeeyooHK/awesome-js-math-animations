@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flowing Filament Membrane</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #f1efea; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #error {
+      display: none;
+      position: fixed;
+      inset: 0;
+      place-items: center;
+      color: #30333c;
+      font: 14px/1.5 system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Translucent colored filaments folding into a flowing membrane"></canvas>
+  <div id="error" role="alert">This animation needs WebGL 2.</div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const error = document.querySelector('#error');
+      const gl = canvas.getContext('webgl2', {
+        alpha: false,
+        antialias: false,
+        depth: false,
+        powerPreference: 'high-performance'
+      });
+
+      if (!gl) {
+        canvas.hidden = true;
+        error.style.display = 'grid';
+        return;
+      }
+
+      const strandsPerSheet = 1850;
+      const sheetCount = 4;
+      const segmentCount = 70;
+      const lineCount = strandsPerSheet * sheetCount * segmentCount;
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+        uniform vec2 resolution;
+        uniform float time;
+        out vec4 filament;
+
+        #define PI 3.14159265359
+        #define TAU 6.28318530718
+
+        float hash(float n) {
+          return fract(sin(n * 91.3458) * 47453.5453);
+        }
+
+        mat2 rotate2(float angle) {
+          float c = cos(angle), s = sin(angle);
+          return mat2(c, -s, s, c);
+        }
+
+        vec3 membrane(float u, float v, float sheet, float seed, float t) {
+          float cycle = t * 0.185;
+          float breath = sin(cycle * 1.37 + sheet * 1.9);
+          float spread = 0.96 + 0.25*sin(cycle * 0.81 + sheet*2.1);
+          float base = vec4(2.35, 0.73, 3.88, -0.62)[int(sheet)];
+          base += 0.21*sin(cycle*0.63 + sheet*1.7);
+
+          float open = smoothstep(0.0, 0.16, v);
+          float angle = base
+            + (u - 0.5) * spread * (0.20 + 1.16*v)
+            + (v - 0.34) * (0.62*sin(cycle*0.47 + sheet*1.31))
+            + 0.12*sin(3.4*v + cycle + sheet);
+
+          float edge = pow(sin(PI*u), 0.20);
+          float radius = (0.012 + 1.02*pow(v, 0.82)) * (0.86 + 0.15*edge);
+          radius *= 1.0 + 0.065*sin(TAU*u*2.0 + cycle*1.2 + sheet);
+
+          vec3 p = vec3(cos(angle), sin(angle), 0.0) * radius;
+          p.y *= 1.18;
+
+          float fold = sin(PI*v) * (
+              0.31*sin(TAU*u + cycle*0.91 + sheet*1.6)
+            + 0.18*sin(2.0*angle - cycle*0.73)
+          );
+          p.z = fold + 0.22*breath*sin(PI*v)*cos(angle*1.5);
+          p.xy += 0.055*vec2(
+            sin(cycle*1.1 + sheet),
+            cos(cycle*0.9 + sheet*1.2)
+          ) * open;
+          p.x += 0.16*p.y + 0.10*sin(1.7*p.y + cycle*0.72);
+          p.y += 0.045*sin(1.4*p.x - cycle*0.51);
+
+          // Tiny independent offsets keep the membrane fibrous instead of geometric.
+          p += (seed - 0.5) * vec3(0.010, 0.010, 0.020) * smoothstep(0.08, 0.70, v);
+          return p;
+        }
+
+        void main() {
+          int segmentVertex = gl_VertexID;
+          int segment = (segmentVertex / 2) % ${segmentCount};
+          int strand = (segmentVertex / 2) / ${segmentCount};
+          int sheetIndex = strand / ${strandsPerSheet};
+          int strandIndex = strand - sheetIndex * ${strandsPerSheet};
+
+          float endpoint = float(segmentVertex & 1);
+          float v = (float(segment) + endpoint) / float(${segmentCount});
+          float seed = hash(float(strandIndex) + float(sheetIndex)*317.0);
+          float u = (float(strandIndex) + 0.35*seed) / float(${strandsPerSheet} - 1);
+          float sheet = float(sheetIndex);
+
+          vec3 p = membrane(u, v, sheet, seed, time);
+          p.xz = rotate2(0.12*sin(time*0.071)) * p.xz;
+          p.yz = rotate2(-0.11 + 0.15*sin(time*0.057 + 1.0)) * p.yz;
+          p.xy = rotate2(0.06*sin(time*0.049)) * p.xy;
+
+          float perspective = 1.0 / (1.32 - 0.19*p.z);
+          vec2 screen = p.xy * perspective;
+          screen.x *= resolution.y / resolution.x;
+          screen *= 1.08;
+          gl_Position = vec4(screen, 0.0, 1.0);
+
+          vec3 navy = vec3(0.985, 0.845, 0.885);
+          vec3 cyan = vec3(0.29, 0.67, 0.78);
+          vec3 coral = vec3(0.98, 0.46, 0.39);
+          vec3 amber = vec3(1.00, 0.67, 0.27);
+          vec3 lilac = vec3(0.70, 0.63, 0.88);
+
+          float middle = exp(-pow((v - 0.48) / 0.22, 2.0));
+          float rim = smoothstep(0.58, 1.0, v);
+          vec3 outer = mix(cyan, lilac, 0.48 + 0.35*sin(TAU*u + sheet*1.3));
+          vec3 warm = mix(coral, amber, 0.5 + 0.5*sin(TAU*u*1.4 + sheet));
+          vec3 color = mix(navy, warm, smoothstep(0.12, 0.50, v));
+          color = mix(color, outer, rim*0.76);
+          color = mix(color, navy, middle * (0.30 + 0.28*sin(TAU*u + sheet)));
+
+          float sideFade = pow(sin(PI*u), 0.32);
+          float endFade = smoothstep(0.0, 0.055, v) * (1.0 - 0.28*smoothstep(0.94, 1.0, v));
+          float depthFade = 0.62 + 0.38*smoothstep(-0.35, 0.38, p.z);
+          float alpha = 0.062 * sideFade * endFade * depthFade;
+          filament = vec4(color, alpha);
+        }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        in vec4 filament;
+        out vec4 fragColor;
+        void main() {
+          fragColor = filament;
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader));
+        }
+        return shader;
+      }
+
+      try {
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+
+        gl.useProgram(program);
+        gl.bindVertexArray(gl.createVertexArray());
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+        const resolution = gl.getUniformLocation(program, 'resolution');
+        const time = gl.getUniformLocation(program, 'time');
+        const start = performance.now();
+
+        function frame(now) {
+          const ratio = Math.min(devicePixelRatio || 1, 1.5);
+          const width = Math.round(canvas.clientWidth * ratio);
+          const height = Math.round(canvas.clientHeight * ratio);
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+            gl.viewport(0, 0, width, height);
+          }
+
+          gl.clearColor(0.945, 0.936, 0.918, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.uniform2f(resolution, width, height);
+          gl.uniform1f(time, (now - start) * 0.001);
+          gl.drawArrays(gl.LINES, 0, lineCount * 2);
+          requestAnimationFrame(frame);
+        }
+
+        requestAnimationFrame(frame);
+      } catch (message) {
+        console.error(message);
+        canvas.hidden = true;
+        error.textContent = 'The filament shader could not be started on this device.';
+        error.style.display = 'grid';
+      }
+    })();
+  </script>
+</body>
+</html>

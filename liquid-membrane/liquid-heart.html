@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Liquid Heart Pebble</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #060707; }
+    body { display: grid; place-items: center; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #error { display: none; color: #c9c5d4; font: 14px/1.5 system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="A softly glowing heart-shaped liquid pebble"></canvas>
+  <div id="error" role="alert">This animation needs WebGL 2.</div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const error = document.querySelector('#error');
+      const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false });
+      if (!gl) {
+        canvas.hidden = true;
+        error.style.display = 'block';
+        return;
+      }
+
+      const vertexSource = `#version 300 es
+        in vec2 position;
+        void main() { gl_Position = vec4(position, 0.0, 1.0); }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        uniform vec2 resolution;
+        uniform float time;
+        out vec4 fragColor;
+        #define TAU 6.28318530718
+
+        mat2 rotate2(float a) {
+          float c = cos(a), s = sin(a);
+          return mat2(c, -s, s, c);
+        }
+
+        float sdEllipsoid(vec3 p, vec3 radius) {
+          float k0 = length(p / radius);
+          float k1 = length(p / (radius * radius));
+          return k0 * (k0 - 1.0) / k1;
+        }
+
+        float scene(vec3 p, float t) {
+          // Start with one continuous rounded stone, then introduce only soft
+          // heart cues so it remains a pebble rather than a beveled heart icon.
+          p.xz = rotate2(0.15*sin(t)) * p.xz;
+          p.yz = rotate2(0.10*cos(t) - 0.025) * p.yz;
+          p.xy = rotate2(0.035*sin(2.0*t)) * p.xy;
+          float breathe = 1.0 + 0.018*sin(2.0*t);
+          vec3 q = p / breathe;
+          q.y += 0.02;
+
+          // A deliberate pebble-to-heart transformation, eased at both ends.
+          float morph = 0.5 + 0.5*sin(t - 0.65);
+          morph = morph*morph*(3.0 - 2.0*morph);
+          float transition = 4.0*morph*(1.0 - morph);
+
+          // The lower half narrows and the upper shoulders widen as the heart forms.
+          float lowerWidth = mix(0.91, 0.72, morph);
+          float upperWidth = mix(0.98, 1.05, morph);
+          float width = mix(lowerWidth, upperWidth, smoothstep(-0.68, 0.30, q.y));
+          vec3 pebble = q;
+          pebble.x /= width;
+          float heart = sdEllipsoid(pebble, vec3(0.82, mix(0.73, 0.79, morph), 0.46));
+
+          // The cleft and paired lobes emerge from the single rounded stone.
+          float top = smoothstep(0.12, 0.68, q.y);
+          float cleftDepth = mix(0.018, 0.118, morph);
+          float cleftWidth = mix(0.25, 0.16, morph);
+          float cleft = cleftDepth*exp(-pow(q.x/cleftWidth, 2.0))*top;
+          float shoulders = exp(-pow((abs(q.x) - 0.39)/0.19, 2.0))*top;
+          heart += cleft - mix(0.004, 0.030, morph)*shoulders;
+
+          // Surface activity peaks while the geometry is between its two states.
+          float rippleAmount = 0.007 + 0.026*transition;
+          float ripple = rippleAmount*sin(4.0*q.x + 1.3*t)*sin(3.3*q.y - 0.7*t)
+                       + (0.005 + 0.010*transition)*sin(5.0*q.z - 1.6*t);
+          return (heart + ripple) * 0.82;
+        }
+
+        vec3 normalAt(vec3 p, float t) {
+          vec2 e = vec2(0.0025, 0.0);
+          return normalize(vec3(
+            scene(p + e.xyy, t) - scene(p - e.xyy, t),
+            scene(p + e.yxy, t) - scene(p - e.yxy, t),
+            scene(p + e.yyx, t) - scene(p - e.yyx, t)
+          ));
+        }
+
+        float specular(vec3 n, vec3 light, vec3 view, float power) {
+          return pow(max(dot(n, normalize(light + view)), 0.0), power);
+        }
+
+        void main() {
+          vec2 uv = (2.0*gl_FragCoord.xy - resolution) / resolution.y;
+          uv.y += 0.015;
+          float t = mod(time, 5.53) / 5.53 * TAU;
+          vec3 ro = vec3(uv * 1.08, 3.1);
+          vec3 rd = vec3(0.0, 0.0, -1.0);
+
+          float travel = 0.0;
+          float nearest = 10.0;
+          bool hit = false;
+          for (int i = 0; i < 100; i++) {
+            float d = scene(ro + rd*travel, t);
+            nearest = min(nearest, abs(d));
+            if (d < 0.0015) { hit = true; break; }
+            travel += max(d*0.58, 0.003);
+            if (travel > 6.2) break;
+          }
+
+          vec3 bg = vec3(0.021, 0.023, 0.023);
+          vec3 col = bg * (1.0 - 0.13*smoothstep(0.35, 1.45, length(uv)));
+          if (hit) {
+            vec3 p = ro + rd*travel;
+            vec3 n = normalAt(p, t);
+            vec3 v = -rd;
+            float fresnel = pow(1.0 - max(dot(n, v), 0.0), 2.65);
+
+            vec3 violet = vec3(0.25, 0.18, 1.00);
+            vec3 amber = vec3(1.00, 0.48, 0.10);
+            vec3 coral = vec3(1.00, 0.20, 0.16);
+            vec3 teal = vec3(0.08, 0.40, 0.42);
+            vec3 olive = vec3(0.45, 0.50, 0.12);
+
+            // Fixed studio lights reveal the moving folds and concavities.
+            float violetSoft = specular(n, normalize(vec3(-0.85, 0.40, 0.55)), v, 7.0);
+            float violetSharp = specular(n, normalize(vec3(-0.72, 0.56, 0.42)), v, 30.0);
+            float amberSoft = specular(n, normalize(vec3(0.88, 0.34, 0.52)), v, 8.0);
+            float coralSharp = specular(n, normalize(vec3(0.78, -0.30, 0.45)), v, 25.0);
+            float lower = specular(n, normalize(vec3(-0.10, -0.92, 0.42)), v, 18.0);
+
+            vec3 edge = violet*pow(max(-n.x, 0.0), 0.65)
+                      + amber*pow(max(n.x, 0.0), 0.70)
+                      + vec3(0.55, 0.48, 0.88)*pow(max(n.y, 0.0), 1.2)
+                      + mix(olive, teal, smoothstep(-0.8, 0.6, n.x))*pow(max(-n.y, 0.0), 1.1);
+
+            vec3 reflected = reflect(-v, n);
+            float ribbon = exp(-pow((reflected.y - 0.22*sin(2.2*reflected.x + 0.45*t)) / 0.085, 2.0));
+            vec3 ribbonColor = mix(violet, coral, smoothstep(-0.55, 0.60, reflected.x));
+
+            col = vec3(0.006, 0.008, 0.011);
+            col += edge * fresnel * 0.46;
+            col += violet*(0.105*violetSoft + 0.18*violetSharp);
+            col += amber*0.13*amberSoft + coral*0.18*coralSharp;
+            col += mix(olive, teal, smoothstep(-0.4, 0.5, p.x))*0.11*lower;
+            col += ribbonColor * ribbon * (0.025 + 0.15*fresnel);
+            col += vec3(0.018, 0.021, 0.030) * max(n.y*0.5 + 0.5, 0.0);
+          } else {
+            float haze = exp(-nearest*55.0);
+            col += vec3(0.07, 0.055, 0.10) * haze * 0.08;
+          }
+
+          col = 1.0 - exp(-col*1.18);
+          col = pow(col, vec3(0.92));
+          float grain = fract(sin(dot(gl_FragCoord.xy + fract(time)*31.0, vec2(12.9898, 78.233))) * 43758.5453);
+          col += (grain - 0.5)*0.006;
+          fragColor = vec4(max(col, 0.0), 1.0);
+        }
+      `;
+
+      function shader(type, source) {
+        const result = gl.createShader(type);
+        gl.shaderSource(result, source);
+        gl.compileShader(result);
+        if (!gl.getShaderParameter(result, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(result));
+        }
+        return result;
+      }
+
+      try {
+        const program = gl.createProgram();
+        gl.attachShader(program, shader(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, shader(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        gl.useProgram(program);
+
+        const vertices = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+        const position = gl.getAttribLocation(program, 'position');
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+        const resolution = gl.getUniformLocation(program, 'resolution');
+        const time = gl.getUniformLocation(program, 'time');
+        const start = performance.now();
+
+        function frame(now) {
+          const ratio = Math.min(devicePixelRatio || 1, 2);
+          const width = Math.round(canvas.clientWidth * ratio);
+          const height = Math.round(canvas.clientHeight * ratio);
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+            gl.viewport(0, 0, width, height);
+          }
+          gl.uniform2f(resolution, canvas.width, canvas.height);
+          gl.uniform1f(time, (now - start) * 0.001);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+      } catch (message) {
+        console.error(message);
+        canvas.hidden = true;
+        error.textContent = 'The shader could not be started on this device.';
+        error.style.display = 'block';
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cosmic Neural Bloom</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #01030c; }
+    canvas { display: block; width: 100%; height: 100%; cursor: pointer; }
+    #error { position: fixed; inset: 0; display: none; place-items: center; padding: 2rem; color: #d7e9ff; font: 15px/1.5 system-ui, sans-serif; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="An animated cosmic brain transforming into a radiant neural starburst"></canvas>
+  <div id="error" role="alert"></div>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#scene');
+      const error = document.querySelector('#error');
+      const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, powerPreference: 'high-performance' });
+
+      const fail = message => {
+        canvas.hidden = true;
+        error.style.display = 'grid';
+        error.textContent = message;
+      };
+
+      if (!gl) {
+        fail('This animation requires WebGL 2.');
+        return;
+      }
+
+      const vertexSource = `#version 300 es
+        in vec2 a_position;
+        void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
+      `;
+
+      const fragmentSource = `#version 300 es
+        precision highp float;
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        out vec4 outColor;
+
+        #define PI 3.14159265359
+        #define TAU 6.28318530718
+
+        float hash11(float p) {
+          p = fract(p * .1031);
+          p *= p + 33.33;
+          p *= p + p;
+          return fract(p);
+        }
+
+        float hash21(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1, 0)), f.x),
+                     mix(hash21(i + vec2(0, 1)), hash21(i + 1.0), f.x), f.y);
+        }
+
+        float fbm(vec2 p) {
+          float v = 0.0, a = .5;
+          mat2 m = mat2(.80, .60, -.60, .80);
+          for (int i = 0; i < 5; i++) {
+            v += a * noise(p);
+            p = m * p * 2.03 + 7.1;
+            a *= .5;
+          }
+          return v;
+        }
+
+        mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+        float gauss(float x, float w) { return exp(-x * x / max(.00001, w)); }
+
+        float ellipseDistance(vec2 p, vec2 center, vec2 radius) {
+          return (length((p - center) / radius) - 1.0) * min(radius.x, radius.y);
+        }
+
+        float hemisphereDistance(vec2 p, float side) {
+          p.x *= side;
+          float d = ellipseDistance(p, vec2(.31, .25), vec2(.34, .37));
+          d = min(d, ellipseDistance(p, vec2(.55, .16), vec2(.31, .35)));
+          d = min(d, ellipseDistance(p, vec2(.61, -.10), vec2(.30, .31)));
+          d = min(d, ellipseDistance(p, vec2(.43, -.30), vec2(.34, .27)));
+          d = min(d, ellipseDistance(p, vec2(.20, -.25), vec2(.25, .25)));
+          return d;
+        }
+
+        // Recursive spectral detail adapted from glsl/mountain-votex.html.
+        float spectralDetail(vec2 p) {
+          vec3 q = vec3(p, atan(p.y, p.x));
+          float e = 0.0;
+          float s = 3.0;
+          for (int i = 0; i < 8; i++) {
+            e += sin(dot(cos(q.zyy * s), .5 + cos(q.xxz * s))) / s * .30;
+            s *= 2.0;
+          }
+          return e;
+        }
+
+        vec3 starField(vec2 p, float t) {
+          vec3 c = vec3(0);
+          for (int layer = 0; layer < 3; layer++) {
+            float z = float(layer) + 1.0;
+            vec2 q = p * (38.0 + z * 24.0) + vec2(z * 19.4, z * 7.3);
+            vec2 id = floor(q), f = fract(q) - .5;
+            float h = hash21(id);
+            float size = mix(.018, .075, pow(h, 18.0));
+            float d = length(f);
+            float star = smoothstep(size, 0.0, d) * (.35 + .65 * sin(t * (1.3 + h) + h * 40.0) * .5 + .5);
+            vec3 tint = mix(vec3(.40, .70, 1.0), vec3(1.0, .70, .34), hash11(h * 51.0));
+            c += tint * star * (1.0 + 2.0 * pow(h, 20.0));
+          }
+          return c;
+        }
+
+        vec3 galaxy(vec2 p, vec2 center, float scale, float tilt, float phase, vec3 tint) {
+          p = rot(tilt) * (p - center);
+          p.y /= .50;
+          p /= scale;
+          float r = length(p);
+          float a = atan(p.y, p.x);
+          float arms = .5 + .5 * cos(a * 3.0 - log(r + .055) * 6.4 + phase);
+          arms = pow(arms, 7.0);
+          float dust = fbm(p * 8.0 + phase) * .75 + .25;
+          float disc = exp(-r * 2.6) * smoothstep(1.25, .06, r);
+          float lane = arms * disc * dust;
+          float core = exp(-r * r * 75.0);
+          float rim = exp(-r * 2.0) * (.14 + .42 * arms);
+          return tint * (lane * 1.45 + rim * .35) + vec3(1.0, .69, .34) * core * 2.8;
+        }
+
+        float mountainRidge(float x, float seed) {
+          float broad = fbm(vec2(x * 1.75 + seed, seed * 3.1));
+          float crags = 1.0 - abs(noise(vec2(x * 7.0 + seed, 2.7)) * 2.0 - 1.0);
+          float teeth = pow(abs(sin(x * 10.5 + seed + broad * 3.2)), 7.0);
+          float spectral = abs(spectralDetail(vec2(x * 1.3 + seed, seed * .17)));
+          return broad * .15 + crags * .050 + teeth * .045 + spectral * .11;
+        }
+
+        float branchField(vec2 p, float time, out float goldMix) {
+          float r = length(p);
+          float a = atan(p.y, p.x);
+          float result = 0.0;
+          goldMix = 0.0;
+
+          // Several angular octaves create a recursively splitting neural tree.
+          for (int j = 0; j < 4; j++) {
+            float fj = float(j);
+            float count = 7.0 * exp2(fj);
+            float warp = sin(r * (5.0 + fj * 3.0) - time * (.10 + fj * .035) + sin(a * 3.0)) * (.42 + .12 * fj);
+            float spokes = abs(sin(a * count * .5 + warp));
+            float width = (.020 - fj * .0038) / max(.24, r);
+            float line = 1.0 - smoothstep(width, width * 2.8, spokes);
+            float band = smoothstep(.13 + fj * .13, .24 + fj * .13, r) * (1.0 - smoothstep(.70 + fj * .18, .92 + fj * .19, r));
+            float flicker = .72 + .28 * sin(time * 2.0 + a * 17.0 + r * 31.0 + fj);
+            result += line * band * flicker * (1.0 - fj * .13);
+            goldMix += line * band * step(0.5, fract((a / TAU + 1.0) * count + fj * .37));
+          }
+
+          // Strong, slightly crooked trunks anchor the finer branching.
+          float trunks = abs(sin(a * 7.0 + sin(r * 7.0 - time * .16) * .34));
+          result += (1.0 - smoothstep(.026 / max(r, .18), .092 / max(r, .18), trunks)) * smoothstep(.04, .16, r) * smoothstep(1.36, .25, r) * 1.65;
+          return result;
+        }
+
+        vec3 meteor(vec2 p, vec2 origin, vec2 direction, float phase, vec3 color) {
+          float cycle = fract(u_time * .055 + phase);
+          vec2 head = origin + direction * (cycle * 2.6 - .35);
+          vec2 d = p - head;
+          vec2 n = normalize(direction);
+          float along = dot(d, n);
+          float across = abs(dot(d, vec2(-n.y, n.x)));
+          float tail = exp(-max(0.0, -along) * 5.4) * smoothstep(.42, -.02, along);
+          float streak = exp(-across * 150.0) * tail;
+          float headGlow = exp(-dot(d, d) * 900.0);
+          return color * (streak * 1.3 + headGlow * 4.0);
+        }
+
+        void main() {
+          vec2 p = (2.0 * gl_FragCoord.xy - u_resolution.xy) / u_resolution.y;
+          float cycle = mod(u_time, 18.0);
+          float progress = smoothstep(0.0, 1.0, clamp(cycle / 16.2, 0.0, 1.0));
+          float endFade = 1.0 - smoothstep(16.25, 17.9, cycle);
+          float time = u_time;
+
+          // Slow push toward the central singularity, matching the reference arc.
+          float zoom = mix(.78, 1.72, progress);
+          vec2 world = p / zoom;
+          world += vec2(.02 * sin(time * .11), -.015 + .015 * sin(time * .08));
+          float r = length(world);
+          float a = atan(world.y, world.x);
+
+          vec3 color = vec3(.0015, .004, .018);
+          float cloud = fbm(world * 2.1 + vec2(time * .008, 0.0));
+          float fineCloud = fbm(world * 7.0 - vec2(time * .012, 0.0));
+          color += mix(vec3(.006, .018, .075), vec3(.12, .018, .18), cloud) * (.16 + .52 * fineCloud) * smoothstep(1.65, .15, r);
+          color += starField(world / zoom, time) * .72;
+
+          // Purple and blue spiral systems drift outward as the camera advances.
+          float galaxyReveal = smoothstep(.08, .36, progress) * (1.0 - .20 * progress);
+          color += galaxy(world, vec2(.50, .30), .39, -.12, time * .045, vec3(.30, .13, 1.0)) * galaxyReveal;
+          color += galaxy(world, vec2(-.52, -.30), .34, .18, 2.2 - time * .036, vec3(.52, .10, .82)) * smoothstep(.38, .62, progress);
+          color += galaxy(world, vec2(-.42, .31), .37, .08, 1.0 + time * .028, vec3(.32, .12, .74)) * (1.0 - smoothstep(.55, .90, progress));
+
+          // Early brain silhouette built from two separate anatomical hemispheres.
+          vec2 brainP = world - vec2(0.0, .10);
+          float leftDistance = hemisphereDistance(brainP, -1.0);
+          float rightDistance = hemisphereDistance(brainP, 1.0);
+          float leftInterior = 1.0 - smoothstep(-.020, .018, leftDistance);
+          float rightInterior = 1.0 - smoothstep(-.020, .018, rightDistance);
+          float leftShell = gauss(leftDistance, .00034);
+          float rightShell = gauss(rightDistance, .00034);
+
+          vec2 hemi = vec2(abs(brainP.x) - .39, brainP.y - .02);
+          float warp = spectralDetail(hemi * 2.1) * 2.7;
+          vec2 upperLobe = hemi - vec2(-.04, .21);
+          vec2 lowerLobe = hemi - vec2(.07, -.20);
+          float upperFold = abs(sin(length(upperLobe * vec2(1.0, 1.22)) * 20.0
+                             - atan(upperLobe.y, upperLobe.x) * 2.7 + warp));
+          float lowerFold = abs(sin(length(lowerLobe * vec2(1.0, 1.18)) * 22.0
+                             + atan(lowerLobe.y, lowerLobe.x) * 2.2 - warp * .7));
+          float crossFold = abs(sin(hemi.y * 18.0 + sin(hemi.x * 13.0) * 2.2 + warp));
+          float gyri = 1.0 - smoothstep(.045, .125, min(min(upperFold, lowerFold), crossFold));
+          gyri *= max(leftInterior, rightInterior) * (.55 + .45 * fbm(hemi * 9.0 + 3.0));
+
+          float fissure = gauss(brainP.x + .010 * sin(brainP.y * 21.0), .00016)
+                         * smoothstep(-.30, .06, brainP.y) * (1.0 - smoothstep(.47, .66, brainP.y));
+          float brainMask = (1.0 - smoothstep(.20, .58, progress));
+          color += vec3(.69, .16, 1.0) * (leftShell * 1.65 + gyri * leftInterior * .72) * brainMask;
+          color += vec3(.08, .57, 1.0) * (rightShell * 1.65 + gyri * rightInterior * .72) * brainMask;
+          color += vec3(1.0, .58, .27) * gyri * .22 * brainMask;
+          color += vec3(.55, .82, 1.0) * fissure * .72 * brainMask;
+
+          // Expanding radial neural tree.
+          float goldMix;
+          float branches = branchField(world, time, goldMix);
+          float branchReveal = smoothstep(.16, .48, progress);
+          vec3 branchColor = mix(vec3(.14, .57, 1.0), vec3(1.0, .62, .31), clamp(goldMix, 0.0, 1.0));
+          color += branchColor * branches * branchReveal * (1.0 + .42 * progress);
+          color += vec3(.30, .10, .85) * branches * branches * .22;
+
+          // Fluid energy ribbons curl out of the center.
+          for (int i = 0; i < 7; i++) {
+            float fi = float(i);
+            float target = sin(a * (3.0 + mod(fi, 3.0)) + r * (7.0 + fi) - time * (.13 + fi * .006) + fi * 1.7);
+            float ribbon = gauss(target, .0022 + fi * .00016) * smoothstep(.08, .24, r) * smoothstep(1.18, .32, r);
+            vec3 ribbonColor = mix(vec3(.10, .48, 1.0), vec3(.88, .23, 1.0), .5 + .5 * sin(fi * 2.1));
+            color += ribbonColor * ribbon * (.10 + .11 * progress);
+          }
+
+          // Star-like core, lens rings and long diffraction rays.
+          float pulse = .94 + .06 * sin(time * 2.7);
+          float core = exp(-r * r * mix(38.0, 74.0, progress));
+          float halo = exp(-r * mix(4.5, 6.2, progress));
+          float ring1 = gauss(r - mix(.19, .11, progress), .00016);
+          float ring2 = gauss(r - mix(.29, .18, progress), .00022);
+          float rays = pow(max(0.0, cos(a * 14.0 + sin(r * 8.0) * .24)), 80.0) * exp(-r * 2.0);
+          color += vec3(1.0, .57, .24) * halo * .58;
+          color += vec3(.55, .75, 1.0) * (ring1 * .42 + ring2 * .20 + rays * 1.4);
+          color += vec3(1.0, .89, .66) * core * 3.8 * pulse;
+          color += vec3(1.0) * exp(-r * r * 430.0) * 4.5;
+
+          // Layered craggy mountains frame the establishing shot.
+          float x = world.x;
+          float farRidge = -.73 + mountainRidge(x, 4.7)
+                         + .20 * max(0.0, 1.0 - abs(x + .72) * 3.0)
+                         + .25 * max(0.0, 1.0 - abs(x - .48) * 4.1)
+                         + .25 * pow(smoothstep(.70, 1.72, abs(x)), 1.4);
+          float nearRidge = -.88 + mountainRidge(x, 9.2) * 1.10
+                          + .37 * max(0.0, 1.0 - abs(x - .58) * 3.6)
+                          + .22 * max(0.0, 1.0 - abs(x + .43) * 4.8)
+                          + .67 * pow(smoothstep(.62, 1.74, abs(x)), 1.55);
+          float farMountain = 1.0 - smoothstep(farRidge - .012, farRidge + .012, world.y);
+          float nearMountain = 1.0 - smoothstep(nearRidge - .009, nearRidge + .009, world.y);
+          float mountainAlpha = 1.0 - smoothstep(.38, .72, progress);
+          float farStrata = abs(spectralDetail(vec2(world.x * 1.8, world.y * 2.4)));
+          float nearStrata = abs(spectralDetail(vec2(world.x * 3.1 + 4.0, world.y * 4.0)));
+          vec3 farRock = mix(vec3(.006, .012, .038), vec3(.035, .065, .120), clamp(fbm(world * 11.0) + farStrata, 0.0, 1.0));
+          vec3 nearRock = mix(vec3(.001, .002, .009), vec3(.022, .025, .055), clamp(fbm(world * 23.0) + nearStrata * .7, 0.0, 1.0));
+          color = mix(color, farRock, farMountain * mountainAlpha * .92);
+          color = mix(color, nearRock, nearMountain * mountainAlpha);
+          color += vec3(.15, .40, .86) * gauss(world.y - farRidge, .00025) * mountainAlpha * .40;
+          color += vec3(.30, .25, .62) * gauss(world.y - nearRidge, .00016) * mountainAlpha * .24;
+
+          // Sparse comets give the same outward cinematic momentum.
+          color += meteor(world, vec2(-1.25, .62), normalize(vec2(1.0, -.48)), .12, vec3(.65, .78, 1.0));
+          color += meteor(world, vec2(.85, 1.0), normalize(vec2(-.62, -.78)), .49, vec3(.54, .72, 1.0));
+          color += meteor(world, vec2(-1.0, -.30), normalize(vec2(1.0, .35)), .76, vec3(1.0, .58, .36));
+
+          // Filmic contrast, bloom-like shoulder, vignette and a clean loop fade.
+          color = 1.0 - exp(-color * 1.18);
+          color = pow(color, vec3(.82));
+          float vignette = 1.0 - .30 * pow(length(p * vec2(.54, .72)), 1.7);
+          color *= max(.50, vignette) * endFade;
+          color += (hash21(gl_FragCoord.xy + fract(time) * 91.0) - .5) / 255.0;
+          outColor = vec4(color, 1.0);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(log);
+        }
+        return shader;
+      }
+
+      try {
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        gl.useProgram(program);
+
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        const position = gl.getAttribLocation(program, 'a_position');
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+        const resolution = gl.getUniformLocation(program, 'u_resolution');
+        const time = gl.getUniformLocation(program, 'u_time');
+        let start = performance.now();
+        let pausedAt = 0;
+        let paused = false;
+
+        function resize() {
+          const pixels = Math.max(1, innerWidth * innerHeight);
+          const ratio = Math.min(devicePixelRatio || 1, 1.5, Math.sqrt(1800000 / pixels));
+          const width = Math.max(1, Math.round(innerWidth * ratio));
+          const height = Math.max(1, Math.round(innerHeight * ratio));
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+            gl.viewport(0, 0, width, height);
+          }
+        }
+
+        function draw(now) {
+          resize();
+          const elapsed = paused ? pausedAt : (now - start) / 1000;
+          gl.uniform2f(resolution, canvas.width, canvas.height);
+          gl.uniform1f(time, elapsed);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          requestAnimationFrame(draw);
+        }
+
+        canvas.addEventListener('click', () => {
+          if (paused) {
+            start = performance.now() - pausedAt * 1000;
+            paused = false;
+          } else {
+            pausedAt = (performance.now() - start) / 1000;
+            paused = true;
+          }
+        });
+        addEventListener('keydown', event => {
+          if (event.key.toLowerCase() === 'r') {
+            start = performance.now();
+            pausedAt = 0;
+            paused = false;
+          }
+        });
+        requestAnimationFrame(draw);
+      } catch (caught) {
+        console.error(caught);
+        fail('Shader error: ' + caught.message);
+      }
+    })();
+  </script>
+</body>
+</html>
