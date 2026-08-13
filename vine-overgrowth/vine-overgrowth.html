@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Vine Overgrowth</title>
+  <style>
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#d8dad7}
+    canvas{display:block;width:100%;height:100%;cursor:pointer}
+    #error{display:none;position:fixed;inset:0;place-items:center;color:#394136;font:14px system-ui}
+  </style>
+</head>
+<body>
+  <div id="error">This scene requires WebGL.</div>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+
+    const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+    renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    renderer.setSize(innerWidth,innerHeight);
+    renderer.shadowMap.enabled=true;
+    renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    renderer.outputColorSpace=THREE.SRGBColorSpace;
+    renderer.toneMapping=THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure=.94;
+    document.body.prepend(renderer.domElement);
+
+    const scene=new THREE.Scene();
+    scene.background=new THREE.Color(0xd9dbd8);
+    scene.fog=new THREE.Fog(0xd9dbd8,12,24);
+    const camera=new THREE.PerspectiveCamera(34,innerWidth/innerHeight,.1,40);
+    camera.position.set(0,1.0,13.8);
+
+    scene.add(new THREE.HemisphereLight(0xf4ffe8,0x6f766d,1.75));
+    const key=new THREE.DirectionalLight(0xfffbed,2.8);
+    key.position.set(-5,8,8); key.castShadow=true; key.shadow.mapSize.set(2048,2048);
+    key.shadow.camera.left=-8;key.shadow.camera.right=8;key.shadow.camera.top=8;key.shadow.camera.bottom=-8;
+    scene.add(key);
+    const rim=new THREE.DirectionalLight(0xbddc8b,1.5);rim.position.set(6,-1,5);scene.add(rim);
+
+    const world=new THREE.Group();
+    world.position.set(1.4,-.05,0); world.rotation.z=-.08; scene.add(world);
+    const white=new THREE.MeshStandardMaterial({color:0xe9ebe7,roughness:.78,metalness:0});
+    const side=new THREE.MeshStandardMaterial({color:0xc8ccc5,roughness:.86});
+    const mossMats=[0x668044,0x7c9251,0x506c39,0x96a762].map(c=>new THREE.MeshStandardMaterial({color:c,roughness:1}));
+    const stemMat=new THREE.MeshStandardMaterial({color:0x405d32,roughness:.72});
+    const leafMats=[0xb9d879,0x98bd62,0xd4e997,0x789b50].map((c,i)=>new THREE.MeshStandardMaterial({color:c,roughness:.62,side:THREE.DoubleSide,transparent:true,opacity:.90+i*.02}));
+    const structure=new THREE.Group();world.add(structure);
+
+    const spine=new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-2.2,5.7,-1.2),new THREE.Vector3(-2.1,3.7,-.8),
+      new THREE.Vector3(-1.1,2.1,-.25),new THREE.Vector3(.7,.9,.15),
+      new THREE.Vector3(2.35,-.7,.18),new THREE.Vector3(3.25,-3.6,-.4)
+    ]);
+    const blockGeo=new THREE.BoxGeometry(.82,.44,.62,2,1,1);
+    const mossItems=[];
+    const blockCount=25;
+    for(let rail=-2;rail<=2;rail++){
+      for(let i=0;i<blockCount;i++){
+        const t=i/(blockCount-1),p=spine.getPoint(t),tan=spine.getTangent(t).normalize();
+        const normal=new THREE.Vector3(-tan.y,tan.x,0).normalize();
+        p.addScaledVector(normal,rail*.54);
+        const block=new THREE.Mesh(blockGeo,[side,side,white,white,side,side]);
+        block.position.copy(p);block.rotation.z=Math.atan2(tan.y,tan.x)-Math.PI/2;
+        block.rotation.x=.10*Math.sin(i*.9+rail);block.rotation.y=.08*Math.sin(i*.6-rail);
+        block.castShadow=true;block.receiveShadow=true;structure.add(block);
+        const chance=t+.10*Math.sin(i*1.7+rail*2.1);
+        if(chance>.38){
+          const patch=new THREE.Group();patch.position.copy(p);patch.position.z+=.36;
+          patch.rotation.z=block.rotation.z;
+          const count=8+Math.floor(8*(chance-.35));
+          for(let j=0;j<count;j++){
+            const r=.055+Math.random()*.11;
+            const clump=new THREE.Mesh(new THREE.IcosahedronGeometry(r,1),mossMats[(i+j+rail+8)%mossMats.length]);
+            clump.position.set((Math.random()-.5)*.68,(Math.random()-.5)*.34,Math.random()*.11);
+            clump.scale.set(1.6,.8+.5*Math.random(),.5);clump.castShadow=true;patch.add(clump);
+          }
+          patch.userData.birth=.12+t*.52+rail*.012;patch.scale.setScalar(0);mossItems.push(patch);structure.add(patch);
+        }
+      }
+    }
+
+    const leafShape=new THREE.Shape();
+    leafShape.moveTo(0,-.1);leafShape.bezierCurveTo(-.12,-.02,-.72,.12,-.62,.62);
+    leafShape.bezierCurveTo(-.54,1.04,-.12,1.03,0,.72);
+    leafShape.bezierCurveTo(.12,1.03,.54,1.04,.62,.62);
+    leafShape.bezierCurveTo(.72,.12,.12,-.02,0,-.1);
+    const leafGeo=new THREE.ShapeGeometry(leafShape,10);leafGeo.translate(0,.08,0);
+    const growthItems=[];
+    function addVine(points,radius,birth,leafCount){
+      const curve=new THREE.CatmullRomCurve3(points);
+      const segments=160;
+      const tube=new THREE.Mesh(new THREE.TubeGeometry(curve,segments,radius,10,false),stemMat);
+      tube.geometry.setDrawRange(0,0);tube.castShadow=true;tube.userData={birth,segments};world.add(tube);
+      const leaves=[];
+      for(let i=1;i<=leafCount;i++){
+        const t=.05+i/(leafCount+2)*.92,p=curve.getPoint(t),tan=curve.getTangent(t).normalize();
+        const leaf=new THREE.Group();leaf.position.copy(p);
+        const stalk=new THREE.Mesh(new THREE.CylinderGeometry(.018,.025,.34,6),stemMat);
+        stalk.position.y=.17;leaf.add(stalk);
+        const blade=new THREE.Mesh(leafGeo,leafMats[(i+leafCount)%leafMats.length]);
+        const size=.23+.20*(.5+.5*Math.sin(i*2.73+birth*11));
+        blade.scale.set(size,size*(.84+.25*Math.sin(i)),size);
+        blade.position.y=.32;blade.rotation.x=-.28+.5*Math.sin(i*1.9);blade.castShadow=true;leaf.add(blade);
+        const sideSign=i%2?1:-1;leaf.rotation.z=Math.atan2(tan.y,tan.x)-Math.PI/2+sideSign*(.74+.28*Math.sin(i));
+        leaf.rotation.y=sideSign*(.3+.5*Math.sin(i*.81));leaf.scale.setScalar(0);
+        leaf.userData={birth:birth+t*.58,phase:i*1.73+birth*19,baseY:leaf.rotation.y};leaves.push(leaf);world.add(leaf);
+      }
+      growthItems.push({tube,leaves,birth});
+    }
+
+    // Every shoot rises from the root cluster before spreading into the canopy.
+    addVine([new THREE.Vector3(3.6,-4.5,1),new THREE.Vector3(3.0,-1.5,1.1),new THREE.Vector3(1.4,1.0,1),new THREE.Vector3(-1.2,3.2,.8),new THREE.Vector3(-4.9,4.8,.7)],.105,.08,34);
+    addVine([new THREE.Vector3(3.45,-4.55,1.5),new THREE.Vector3(2.25,-1.7,1.65),new THREE.Vector3(2.6,.8,1.5),new THREE.Vector3(1.2,3.7,1.25),new THREE.Vector3(-1.5,5.25,1.15)],.082,.18,31);
+    addVine([new THREE.Vector3(3.55,-4.5,.8),new THREE.Vector3(2.8,-2.1,.9),new THREE.Vector3(1.2,.5,.8),new THREE.Vector3(1.0,3.0,.65),new THREE.Vector3(3.7,4.85,.55)],.072,.28,29);
+
+    const dustGeo=new THREE.BufferGeometry(),dustPos=[];
+    for(let i=0;i<300;i++)dustPos.push((Math.random()-.5)*5,Math.random()*6-2,(Math.random()-.5)*2+1);
+    dustGeo.setAttribute('position',new THREE.Float32BufferAttribute(dustPos,3));
+    const dust=new THREE.Points(dustGeo,new THREE.PointsMaterial({color:0x70824f,size:.025,transparent:true,opacity:.25}));world.add(dust);
+
+    const clamp=x=>Math.max(0,Math.min(1,x)),ease=x=>1-Math.pow(1-clamp(x),3);
+    let start=performance.now();const duration=18000,reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+    const pointer=new THREE.Vector2(),target=new THREE.Vector2();
+    addEventListener('pointermove',e=>target.set(e.clientX/innerWidth-.5,e.clientY/innerHeight-.5));
+    renderer.domElement.addEventListener('click',()=>start=performance.now());
+    function animate(now){
+      requestAnimationFrame(animate);const elapsed=now-start,p=reduce?1:clamp(elapsed/duration);
+      for(const item of mossItems){const s=ease((p-item.userData.birth)*7);item.scale.setScalar(s);}
+      for(const item of growthItems){
+        const g=ease((p-item.birth)/(1-item.birth));item.tube.geometry.setDrawRange(0,Math.floor(item.tube.geometry.index.count*g));
+        for(const leaf of item.leaves){
+          const grown=ease((p-leaf.userData.birth)*14);
+          const living=reduce?1:1+.055*Math.sin(now*.00135+leaf.userData.phase)+.025*Math.sin(now*.00043+leaf.userData.phase*2);
+          leaf.scale.setScalar(grown*living);
+          leaf.rotation.y=leaf.userData.baseY+(reduce?0:.07*Math.sin(now*.0011+leaf.userData.phase));
+        }
+      }
+      pointer.lerp(target,.025);world.rotation.y=pointer.x*.10;world.rotation.x=pointer.y*.05;
+      // The mature canopy never freezes: slow light-seeking motion keeps it evolving.
+      if(!reduce){world.rotation.z=-.08+.012*Math.sin(now*.00019);structure.position.y=.025*Math.sin(now*.00031);}
+      dust.rotation.z=now*.000025;renderer.render(scene,camera);
+    }
+    requestAnimationFrame(animate);
+    addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+  </script>
+</body>
+</html>

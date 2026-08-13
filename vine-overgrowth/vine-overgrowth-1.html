@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Growing Vine</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background:
+        radial-gradient(70% 80% at 15% 18%, #e7f0df 0%, transparent 66%),
+        radial-gradient(65% 75% at 82% 72%, #dce7d1 0%, transparent 64%),
+        #e8ebe5;
+    }
+    canvas { display: block; width: 100%; height: 100%; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="vine" aria-label="A vine growing across the screen"></canvas>
+  <script>
+    (() => {
+      const canvas = document.querySelector('#vine');
+      const ctx = canvas.getContext('2d');
+      const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const TAU = Math.PI * 2;
+      const duration = 10500;
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      let start = performance.now();
+
+      const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+      const ease = value => 1 - Math.pow(1 - clamp(value), 3);
+      const fract = value => value - Math.floor(value);
+      const hash = value => fract(Math.sin(value * 127.1) * 43758.5453123);
+
+      const stems = [
+        { start: [1.04, .91], end: [.28, -.12], bend: -.27, delay: 0, width: 15, seed: 2, leaves: 22 },
+        { start: [1.06, .73], end: [.48, -.15], bend: -.20, delay: .08, width: 12, seed: 7, leaves: 18 },
+        { start: [1.08, .98], end: [.08, .31], bend: .18, delay: .17, width: 11, seed: 13, leaves: 20 },
+        { start: [.79, 1.10], end: [.03, .05], bend: .22, delay: .26, width: 9, seed: 19, leaves: 17 },
+        { start: [1.10, .58], end: [.36, .18], bend: .12, delay: .34, width: 8, seed: 31, leaves: 14 }
+      ];
+
+      function pointOnStem(stem, t) {
+        const x0 = stem.start[0] * width;
+        const y0 = stem.start[1] * height;
+        const x2 = stem.end[0] * width;
+        const y2 = stem.end[1] * height;
+        const dx = x2 - x0;
+        const dy = y2 - y0;
+        const length = Math.hypot(dx, dy);
+        const nx = -dy / length;
+        const ny = dx / length;
+        const arc = stem.bend * Math.min(width, height);
+        const x1 = (x0 + x2) * .5 + nx * arc;
+        const y1 = (y0 + y2) * .5 + ny * arc;
+        const mt = 1 - t;
+        const x = mt * mt * x0 + 2 * mt * t * x1 + t * t * x2;
+        const y = mt * mt * y0 + 2 * mt * t * y1 + t * t * y2;
+        const tx = 2 * mt * (x1 - x0) + 2 * t * (x2 - x1);
+        const ty = 2 * mt * (y1 - y0) + 2 * t * (y2 - y1);
+        return { x, y, angle: Math.atan2(ty, tx) };
+      }
+
+      function stemPath(stem, progress) {
+        const steps = Math.max(2, Math.ceil(progress * 80));
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = pointOnStem(stem, progress * i / steps);
+          const sway = Math.sin(i * .51 + stem.seed) * 1.2 * Math.sin(Math.PI * i / steps);
+          const x = p.x + Math.cos(p.angle + Math.PI / 2) * sway;
+          const y = p.y + Math.sin(p.angle + Math.PI / 2) * sway;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+      }
+
+      function drawStem(stem, progress) {
+        if (progress <= 0) return;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        stemPath(stem, progress);
+        ctx.strokeStyle = 'rgba(34, 54, 25, .20)';
+        ctx.lineWidth = stem.width + 5;
+        ctx.stroke();
+        stemPath(stem, progress);
+        ctx.strokeStyle = '#405c31';
+        ctx.lineWidth = stem.width;
+        ctx.stroke();
+        stemPath(stem, progress);
+        ctx.strokeStyle = 'rgba(174, 204, 121, .62)';
+        ctx.lineWidth = Math.max(2, stem.width * .24);
+        ctx.stroke();
+
+        const joints = Math.floor(progress * 18);
+        for (let i = 1; i <= joints; i++) {
+          const t = i / 18;
+          const p = pointOnStem(stem, t);
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.angle);
+          ctx.strokeStyle = 'rgba(21, 39, 17, .55)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(0, -stem.width * .48);
+          ctx.lineTo(0, stem.width * .48);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      function leafPath(size) {
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-size * .30, -size * .18, -size * .60, -size * .96, 0, -size * .84);
+        ctx.bezierCurveTo(size * .60, -size * .96, size * .30, -size * .18, 0, 0);
+        ctx.closePath();
+      }
+
+      function drawLeaf(stem, index, growth) {
+        const t = .08 + index / (stem.leaves + 1) * .88;
+        const born = clamp((growth - t) * 8);
+        if (born <= 0) return;
+        const p = pointOnStem(stem, t);
+        const side = index % 2 ? 1 : -1;
+        const variance = hash(index + stem.seed * 9);
+        const size = (15 + variance * 22) * born * Math.min(width, height) / 720;
+        const branchLength = size * (1.1 + variance * .7);
+        const branchAngle = p.angle + side * (.70 + variance * .45);
+        const bx = p.x + Math.cos(branchAngle) * branchLength;
+        const by = p.y + Math.sin(branchAngle) * branchLength;
+
+        ctx.strokeStyle = 'rgba(55, 81, 38, .86)';
+        ctx.lineWidth = Math.max(.8, size * .075);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.quadraticCurveTo(
+          p.x + Math.cos(branchAngle) * branchLength * .58,
+          p.y + Math.sin(branchAngle) * branchLength * .58,
+          bx, by
+        );
+        ctx.stroke();
+
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.rotate(branchAngle + side * (1.43 + (variance - .5) * .34));
+        const gradient = ctx.createLinearGradient(0, 0, 0, -size);
+        gradient.addColorStop(0, '#72904d');
+        gradient.addColorStop(.56, index % 3 ? '#b5ce79' : '#93ad5f');
+        gradient.addColorStop(1, '#d9e8a4');
+        ctx.shadowColor = 'rgba(34, 53, 23, .22)';
+        ctx.shadowBlur = size * .18;
+        ctx.shadowOffsetY = size * .08;
+        leafPath(size);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        ctx.shadowColor = 'transparent';
+        ctx.strokeStyle = 'rgba(70, 100, 43, .40)';
+        ctx.lineWidth = Math.max(.6, size * .025);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -size * .76);
+        ctx.strokeStyle = 'rgba(77, 105, 48, .38)';
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawTendril(stem, progress) {
+        if (progress < .78) return;
+        const born = ease((progress - .78) / .22);
+        const p = pointOnStem(stem, Math.min(progress, .98));
+        const direction = p.angle + (stem.seed % 2 ? .7 : -.7);
+        const radius = (10 + stem.width) * born;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(direction);
+        ctx.beginPath();
+        for (let i = 0; i <= 28; i++) {
+          const a = i / 28 * TAU * 1.65;
+          const r = radius * i / 28;
+          const x = i * .95 * born + Math.cos(a) * r;
+          const y = Math.sin(a) * r;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.strokeStyle = '#5b793f';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function draw(now) {
+        ctx.clearRect(0, 0, width, height);
+        const elapsed = reduceMotion ? duration : now - start;
+        const overall = clamp(elapsed / duration);
+        for (const stem of stems) {
+          const progress = ease((overall - stem.delay) / (1 - stem.delay));
+          drawStem(stem, progress);
+          for (let i = 0; i < stem.leaves; i++) drawLeaf(stem, i, progress);
+          drawTendril(stem, progress);
+        }
+        if (!reduceMotion && overall < 1) requestAnimationFrame(draw);
+      }
+
+      function resize() {
+        dpr = Math.min(devicePixelRatio || 1, 2);
+        width = innerWidth;
+        height = innerHeight;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        requestAnimationFrame(draw);
+      }
+
+      canvas.addEventListener('click', () => {
+        if (reduceMotion) return;
+        start = performance.now();
+        requestAnimationFrame(draw);
+      });
+      addEventListener('resize', resize);
+      resize();
+    })();
+  </script>
+</body>
+</html>

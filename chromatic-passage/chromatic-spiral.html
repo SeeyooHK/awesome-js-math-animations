@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chromatic Passage</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #08050d; }
+    body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .grain {
+      position: fixed; inset: 0; pointer-events: none; z-index: 2; opacity: .11;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.75'/%3E%3C/svg%3E");
+      mix-blend-mode: soft-light;
+    }
+    .intro {
+      position: fixed; left: clamp(24px, 5vw, 72px); top: clamp(24px, 6vw, 72px);
+      z-index: 3; pointer-events: none; color: #fff8ef;
+      transition: opacity .8s ease, transform .8s ease;
+    }
+    .intro.hidden { opacity: 0; transform: translateY(-8px); }
+    .eyebrow { margin: 0 0 10px; font-size: 10px; letter-spacing: .34em; text-transform: uppercase; opacity: .62; }
+    h1 { margin: 0; max-width: 520px; font-family: Georgia, serif; font-weight: 400; font-size: clamp(36px, 7vw, 88px); line-height: .88; letter-spacing: -.055em; }
+    .hint { position: fixed; right: 24px; bottom: 22px; z-index: 3; color: #fff8ef; opacity: .52; font-size: 10px; letter-spacing: .2em; text-transform: uppercase; pointer-events: none; }
+    .controls { position: fixed; left: 24px; bottom: 18px; z-index: 4; display: flex; gap: 8px; }
+    button {
+      border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(10,6,16,.28);
+      backdrop-filter: blur(10px); color: rgba(255,248,239,.76); padding: 9px 13px; cursor: pointer;
+      font: 10px/1 system-ui, sans-serif; letter-spacing: .15em; text-transform: uppercase;
+    }
+    button:hover, button:focus-visible { color: white; border-color: rgba(255,255,255,.45); outline: none; }
+    @media (max-width: 600px) { .hint { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="intro" id="intro">
+    <p class="eyebrow">An endless study in light</p>
+    <h1>Chromatic<br>Passage</h1>
+  </div>
+  <div class="controls"><button id="pause" type="button">Pause</button></div>
+  <div class="hint">Move to drift · scroll to accelerate</div>
+  <div class="grain"></div>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.167.1/build/three.module.js';
+
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setClearColor(0x08050d, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.prepend(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x08050d, 0.026);
+    const camera = new THREE.PerspectiveCamera(64, innerWidth / innerHeight, .1, 120);
+    camera.position.z = 8;
+
+    const count = innerWidth < 700 ? 18000 : 34000;
+    const length = 100;
+    const positions = new Float32Array(count * 3);
+    const spiralTargets = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const sizes = new Float32Array(count);
+    const seeds = new Float32Array(count);
+    const palette = [
+      new THREE.Color('#f15c45'), new THREE.Color('#ffad66'), new THREE.Color('#f6d78b'),
+      new THREE.Color('#ae63b8'), new THREE.Color('#65499b'), new THREE.Color('#45a7a2'),
+      new THREE.Color('#467fba'), new THREE.Color('#df7892')
+    ];
+
+    for (let i = 0; i < count; i++) {
+      const t = Math.random();
+      const z = 9 - t * length;
+      const phase = Math.random() * Math.PI * 2 + z * .035;
+      const band = Math.random();
+      const radius = 5.2 + Math.pow(Math.random(), 1.8) * 8.5 + Math.sin(z * .085 + band * 9) * .65;
+      positions[i * 3] = Math.cos(phase) * radius;
+      positions[i * 3 + 1] = Math.sin(phase) * radius;
+      positions[i * 3 + 2] = z;
+      const spiralT = (i + Math.random()) / count;
+      spiralTargets[i * 3] = spiralT;
+      spiralTargets[i * 3 + 1] = (Math.random() - .5) * .55;
+      spiralTargets[i * 3 + 2] = (Math.random() - .5) * .7;
+      const c = palette[Math.floor((phase / (Math.PI * 2) * palette.length + palette.length) % palette.length)].clone();
+      c.lerp(palette[(Math.floor(Math.random() * palette.length) + 1) % palette.length], .16);
+      colors.set([c.r, c.g, c.b], i * 3);
+      sizes[i] = 2.2 + Math.random() * 6.5;
+      seeds[i] = Math.random();
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aSpiral', new THREE.BufferAttribute(spiralTargets, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+
+    const material = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexColors: true,
+      uniforms: { uTime: { value: 0 }, uTravel: { value: 0 }, uPixelRatio: { value: renderer.getPixelRatio() } },
+      vertexShader: `
+        attribute vec3 aSpiral; attribute float aSize; attribute float aSeed;
+        varying vec3 vColor; varying float vSeed;
+        uniform float uTime; uniform float uTravel; uniform float uPixelRatio;
+        void main() {
+          vec3 p = position;
+          p.z = 9.0 - mod(9.0 - p.z - uTravel, 100.0);
+          float twist = sin(p.z * .065 + uTime * .22 + aSeed * 6.283) * .12;
+          mat2 rot = mat2(cos(twist), -sin(twist), sin(twist), cos(twist));
+          p.xy = rot * p.xy;
+          p.xy += vec2(sin(p.z * .052 + uTime * .19), cos(p.z * .044 - uTime * .16)) * .38;
+          float spiralProgress = fract(aSpiral.x + uTravel / 100.0);
+          float spiralAngle = spiralProgress * 62.832 + aSpiral.y * .18;
+          float spiralRadius = 7.2 + aSpiral.y;
+          vec3 spiral = vec3(
+            cos(spiralAngle) * spiralRadius,
+            sin(spiralAngle) * spiralRadius,
+            3.0 - spiralProgress * 100.0 + aSpiral.z
+          );
+          spiral.xy += vec2(
+            sin(spiral.z * .031 + uTime * .12),
+            cos(spiral.z * .027 - uTime * .1)
+          ) * .42;
+          float morph = smoothstep(0.0, 1.0, clamp((uTime - .35) / 5.5, 0.0, 1.0));
+          morph = morph * morph * (3.0 - 2.0 * morph);
+          p = mix(p, spiral, morph);
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = min(28.0, aSize * uPixelRatio * (20.0 / max(3.0, -mv.z)));
+          vColor = color; vSeed = aSeed;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor; varying float vSeed;
+        void main() {
+          vec2 p = gl_PointCoord - .5;
+          float angle = (vSeed - .5) * .9;
+          p = mat2(cos(angle), -sin(angle), sin(angle), cos(angle)) * p;
+          p.x *= .42;
+          float d = length(p);
+          float body = smoothstep(.49, .08, d);
+          float bristle = .76 + .24 * sin((p.y + vSeed) * 70.0);
+          float alpha = body * bristle * .82;
+          if (alpha < .025) discard;
+          vec3 ink = vColor * (1.08 + .3 * smoothstep(.45, 0.0, d));
+          gl_FragColor = vec4(ink, alpha);
+        }
+      `
+    });
+
+    const tunnel = new THREE.Points(geometry, material);
+    tunnel.rotation.z = .2;
+    scene.add(tunnel);
+
+    const pointer = new THREE.Vector2();
+    const target = new THREE.Vector2();
+    let velocity = reducedMotion ? .35 : 1.0;
+    let speedImpulse = 0;
+    let paused = reducedMotion;
+    const clock = new THREE.Clock();
+    const pauseButton = document.querySelector('#pause');
+
+    function setPointer(x, y) {
+      target.set((x / innerWidth - .5) * 2, (y / innerHeight - .5) * -2);
+      document.querySelector('#intro').classList.add('hidden');
+    }
+    addEventListener('pointermove', e => setPointer(e.clientX, e.clientY), { passive: true });
+    addEventListener('wheel', e => { speedImpulse = Math.min(4, speedImpulse + Math.abs(e.deltaY) * .005); }, { passive: true });
+    pauseButton.addEventListener('click', () => {
+      paused = !paused;
+      pauseButton.textContent = paused ? 'Play' : 'Pause';
+    });
+    addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); pauseButton.click(); } });
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7)); renderer.setSize(innerWidth, innerHeight);
+      material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    });
+
+    let elapsed = reducedMotion ? 6 : 0;
+    let travel = 0;
+    let rotationTravel = 0;
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), .05);
+      if (!paused) elapsed += dt;
+      pointer.lerp(target, 1 - Math.pow(.001, dt));
+      speedImpulse *= Math.pow(.05, dt);
+      velocity += ((paused ? 0 : 1 + speedImpulse) - velocity) * (1 - Math.pow(.008, dt));
+      camera.position.x += (pointer.x * 1.5 - camera.position.x) * (1 - Math.pow(.025, dt));
+      camera.position.y += (pointer.y * 1.05 - camera.position.y) * (1 - Math.pow(.025, dt));
+      camera.rotation.z += (-pointer.x * .035 - camera.rotation.z) * (1 - Math.pow(.02, dt));
+      if (!paused) {
+        travel = (travel + dt * velocity * 5.8) % length;
+        rotationTravel += dt * velocity * .08;
+      }
+      tunnel.rotation.z = .2 - rotationTravel + Math.sin(elapsed * .08) * .12;
+      material.uniforms.uTime.value = elapsed;
+      material.uniforms.uTravel.value = travel;
+      renderer.render(scene, camera);
+    }
+    pauseButton.textContent = paused ? 'Play' : 'Pause';
+    animate();
+  </script>
+</body>
+</html>
