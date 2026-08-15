@@ -1,0 +1,4 @@
+interface:
+  display_name: "JS Doodler"
+  short_description: "Turn image characters into Three.js doodles"
+  default_prompt: "$jsdoodler @character.png"
