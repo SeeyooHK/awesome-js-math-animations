@@ -1,0 +1,69 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chromatic Tide Cube</title>
+<style>html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}canvas{display:block;width:100%;height:100%}#error{display:none;padding:24px;color:#fff;font:14px/1.5 system-ui;white-space:pre-wrap}</style></head>
+<body><canvas id="cube" aria-label="Rotating glass cube with animated violet and gold fluid faces"></canvas><pre id="error"></pre><script>(()=>{
+const canvas=document.querySelector('#cube'),errorBox=document.querySelector('#error');
+const gl=canvas.getContext('webgl',{alpha:false,antialias:false,powerPreference:'high-performance'});
+if(!gl){errorBox.style.display='block';errorBox.textContent='This effect requires WebGL.';return}
+const vertexSource=`attribute vec2 a_position;void main(){gl_Position=vec4(a_position,0.,1.);}`;
+const fragmentSource=`
+precision highp float;
+#define AA 2
+uniform vec2 u_resolution;uniform float u_time;
+mat3 rx(float a){float c=cos(a),s=sin(a);return mat3(1,0,0,0,c,s,0,-s,c);}
+mat3 ry(float a){float c=cos(a),s=sin(a);return mat3(c,0,-s,0,1,0,s,0,c);}
+mat3 rz(float a){float c=cos(a),s=sin(a);return mat3(c,s,0,-s,c,0,0,0,1);}
+float boxSdf(vec3 p){vec3 q=abs(p)-vec3(.81)+.105;return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.)-.105;}
+vec3 boxNormal(vec3 p){const float e=.0015;vec2 h=vec2(e,0.);return normalize(vec3(boxSdf(p+h.xyy)-boxSdf(p-h.xyy),boxSdf(p+h.yxy)-boxSdf(p-h.yxy),boxSdf(p+h.yyx)-boxSdf(p-h.yyx)));}
+float hash21(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash21(i),hash21(i+vec2(1,0)),f.x),mix(hash21(i+vec2(0,1)),hash21(i+vec2(1)),f.x),f.y);}
+float fbm(vec2 p){float v=0.,a=.5;mat2 m=mat2(.8,.6,-.6,.8);for(int i=0;i<5;i++){v+=a*noise(p);p=m*p*2.03+vec2(7.13,3.71);a*=.5;}return v;}
+vec3 tide(vec2 p,float t,vec3 tint){
+ float n=fbm(p*.75+vec2(-t*.10,t*.035));
+ vec2 warp=vec2(fbm(p+vec2(1.7,-2.4)+n*.7-vec2(t*.18,0)),fbm(p+vec2(-3.1,1.2)-n*.6+vec2(0,t*.08)));
+ vec2 w=p+(warp-.5)*.34;float curve=.08-.48*w.x-.12*sin(w.x*1.7-1.+t*.24);
+ float d=w.y-curve,longi=w.x*.82+w.y*.22;
+ float flow=fbm(vec2(longi*2.4-t*.42,d*6.4)+warp*2.);float fine=fbm(vec2(longi*5.8-t*.72,d*13.)+warp*3.4);
+ float upper=smoothstep(-.5,.6,d),voidShape=smoothstep(.08,-.62,d)*smoothstep(.48,-1.2,w.x);
+ vec3 deepTint=tint*.20,brightTint=mix(tint,vec3(1.),.30);
+ vec3 c=mix(vec3(.002,.002,.012),deepTint,smoothstep(.12,.58,flow));
+ c=mix(c,brightTint,smoothstep(.50,.90,flow));c*=.38+.75*upper;c=mix(c,vec3(.001,0,.005),voidShape*.94);
+ float fiber=pow(.5+.5*sin(25.*longi+8.*flow-t*1.35),7.)*(.3+.7*fine);
+ c+=mix(tint,brightTint,flow)*fiber*smoothstep(-.3,.15,d)*smoothstep(1.,.05,d)*.68;
+ float width=mix(.11,.22,smoothstep(-1.3,1.3,w.x));float crest=exp(-abs(d)/width)*(.4+.9*flow+.3*fine);float inner=exp(-abs(d)/(width*.34));
+ vec3 hotEdge=tint*1.18,hotCore=mix(tint,vec3(1.),.52);
+ c+=hotEdge*crest;c+=hotCore*inner*(.95+.65*flow);c+=mix(hotCore,vec3(1.),.58)*pow(inner,2.4)*(1.+.6*fine);
+ float spray=pow(noise(vec2(longi*43.-t*2.4,d*65.)+warp*8.),8.)*exp(-abs(d+width*.7)/(width*1.2))*smoothstep(.25,-.35,d);
+ c+=mix(hotEdge,hotCore,.65)*spray*2.2;return pow(1.-exp(-c*1.2),vec3(.86));
+}
+vec4 render(vec2 fc){
+ vec2 uv=(2.*fc-u_resolution)/min(u_resolution.x,u_resolution.y);float halo=exp(-1.75*dot(uv,uv));vec3 bg=vec3(.008,.012,.03)*halo;
+ float motion=u_time*.24;mat3 r=rz(-.08+.12*sin(motion*.7))*rx(.34+motion*.58)*ry(-.5+motion);mat3 ir=ry(.5-motion)*rx(-.34-motion*.58)*rz(.08-.12*sin(motion*.7));
+ vec3 ro=ir*vec3(0.,.01,7.2),rd=ir*normalize(vec3(uv,-4.45));vec3 a=(-vec3(.82)-ro)/rd,b=(vec3(.82)-ro)/rd,mn=min(a,b),mx=max(a,b);
+ float tn=max(max(mn.x,mn.y),mn.z),tf=min(min(mx.x,mx.y),mx.z);if(tn>tf||tf<0.)return vec4(bg,1.);
+ float t=max(tn,0.);vec3 p=ro+rd*t;bool hit=false;for(int i=0;i<24;i++){float d=boxSdf(p);if(abs(d)<.0012){hit=true;break;}t+=max(d,.0015);p=ro+rd*t;}if(!hit||t>tf+.12)return vec4(bg,1.);
+ vec3 on=boxNormal(p),n=r*on,an=abs(on);vec2 face;float faceId;
+ if(an.x>an.y&&an.x>an.z){face=vec2(-p.z,p.y)/.81;faceId=on.x>0.?0.:1.;}
+ else if(an.y>an.z){face=vec2(p.x,-p.z)/.81;faceId=on.y>0.?2.:3.;}
+ else{face=vec2(p.x,p.y)/.81;faceId=on.z>0.?4.:5.;}
+ float sq=max(abs(face.x),abs(face.y)),frame=smoothstep(.61,.9,sq),bevel=1.-smoothstep(.18,.76,max(an.x,max(an.y,an.z))),corner=smoothstep(.7,.98,min(abs(face.x),abs(face.y)));
+ vec3 view=-normalize(r*rd);float facing=max(dot(n,view),0.),fres=pow(1.-facing,2.2);vec3 wp=r*p;
+ float glassPhase=u_time*.70+wp.x*1.8+wp.y*1.25-wp.z*.9;
+ vec3 glassA=mix(vec3(.10,.35,1.),vec3(.72,.14,1.),.5+.5*sin(glassPhase));
+ vec3 glassB=mix(vec3(1.,.28,.12),vec3(1.,.12,.58),.5+.5*sin(glassPhase+2.1));
+ vec3 glass=mix(glassA,glassB,.5+.5*sin(glassPhase+4.2));glass*=.62+1.35*fres;
+ vec3 edgeTint=glass/(max(glass.r,max(glass.g,glass.b))+.001);
+ float faceAngle=faceId*1.04719755;
+ vec2 tideFace=mat2(cos(faceAngle),-sin(faceAngle),sin(faceAngle),cos(faceAngle))*face;
+ tideFace=tideFace*1.35+vec2(faceId*1.73,faceId*.91);
+ vec3 panel=tide(tideFace,u_time+faceId*2.35,edgeTint);float mask=1.-smoothstep(.59,.69,sq);vec3 color=mix(glass*.42,panel,mask);
+ vec3 light=normalize(vec3(-.45,.75,.6));float spec=pow(max(dot(reflect(-light,n),view),0.),55.),broad=pow(max(dot(reflect(-light,n),view),0.),7.);float rim=frame+bevel*.8+corner*.35;
+ color+=glass*rim*(.68+.5*corner)+vec3(1.,.87,.65)*spec*1.7+glass*broad*.25;color=mix(bg,color,clamp(.86+rim*.16,0.,1.));return vec4(pow(max(color,0.),vec3(.9)),1.);
+}
+void main(){vec4 c=vec4(0);for(int x=0;x<AA;x++)for(int y=0;y<AA;y++){vec2 o=(vec2(float(x),float(y))+.5)/float(AA)-.5;c+=render(gl_FragCoord.xy+o);}gl_FragColor=c/float(AA*AA);}`;
+function compile(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s}
+let program;try{program=gl.createProgram();gl.attachShader(program,compile(gl.VERTEX_SHADER,vertexSource));gl.attachShader(program,compile(gl.FRAGMENT_SHADER,fragmentSource));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program))}catch(error){canvas.style.display='none';errorBox.style.display='block';errorBox.textContent='Shader compilation failed:\n'+error.message;return}
+const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);gl.useProgram(program);const position=gl.getAttribLocation(program,'a_position');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+const resolution=gl.getUniformLocation(program,'u_resolution'),time=gl.getUniformLocation(program,'u_time'),startedAt=performance.now();
+function resize(){const d=Math.min(devicePixelRatio||1,2),w=Math.round(canvas.clientWidth*d),h=Math.round(canvas.clientHeight*d);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}}
+function frame(now){resize();gl.uniform2f(resolution,canvas.width,canvas.height);gl.uniform1f(time,(now-startedAt)/1000);gl.drawArrays(gl.TRIANGLES,0,6);requestAnimationFrame(frame)}requestAnimationFrame(frame);
+})();</script></body></html>

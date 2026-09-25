@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lattice Cube</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #error {
+      display: none;
+      box-sizing: border-box;
+      padding: 24px;
+      color: #fff;
+      font: 14px/1.5 system-ui, sans-serif;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="orb" aria-label="Animated glass lattice cube"></canvas>
+  <pre id="error"></pre>
+
+  <script>
+    (() => {
+      const canvas = document.querySelector("#orb");
+      const errorBox = document.querySelector("#error");
+      const gl = canvas.getContext("webgl", {
+        alpha: false,
+        antialias: false,
+        powerPreference: "high-performance"
+      });
+
+      if (!gl) {
+        errorBox.style.display = "block";
+        errorBox.textContent = "This effect requires WebGL.";
+        return;
+      }
+
+      const vertexSource = `
+        attribute vec2 a_position;
+
+        void main() {
+          gl_Position = vec4(a_position, 0.0, 1.0);
+        }
+      `;
+
+      const fragmentSource = `
+        precision highp float;
+
+        #define OCTAVES 9
+        #define AA 3
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+
+        const float TAU = 6.28318530718;
+
+        float hash(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+
+        mat3 rotateX(float angle) {
+          float c = cos(angle);
+          float s = sin(angle);
+          return mat3(
+            1.0, 0.0, 0.0,
+            0.0, c, s,
+            0.0, -s, c
+          );
+        }
+
+        mat3 rotateY(float angle) {
+          float c = cos(angle);
+          float s = sin(angle);
+          return mat3(
+            c, 0.0, -s,
+            0.0, 1.0, 0.0,
+            s, 0.0, c
+          );
+        }
+
+        float roundedBoxDistance(vec3 point, float halfSize, float radius) {
+          vec3 q = abs(point) - vec3(halfSize - radius);
+          return length(max(q, 0.0))
+               + min(max(q.x, max(q.y, q.z)), 0.0)
+               - radius;
+        }
+
+        vec3 roundedBoxNormal(vec3 point, float halfSize, float radius) {
+          const float epsilon = 0.0015;
+          vec2 offset = vec2(epsilon, 0.0);
+          return normalize(vec3(
+            roundedBoxDistance(point + offset.xyy, halfSize, radius)
+              - roundedBoxDistance(point - offset.xyy, halfSize, radius),
+            roundedBoxDistance(point + offset.yxy, halfSize, radius)
+              - roundedBoxDistance(point - offset.yxy, halfSize, radius),
+            roundedBoxDistance(point + offset.yyx, halfSize, radius)
+              - roundedBoxDistance(point - offset.yyx, halfSize, radius)
+          ));
+        }
+
+        vec4 renderCube(vec2 fragCoord) {
+          vec2 uv = (2.0 * fragCoord - u_resolution)
+                  / min(u_resolution.x, u_resolution.y);
+
+          const float halfSize = 0.78;
+          const float bevelRadius = 0.065;
+          const float scale = 9.0;
+          const float bulge = 3.28;
+          const float warp = 2.0;
+          const float poleStrength = 0.13;
+          const float poleSoftness = 0.001;
+          const float pulse = 0.35;
+          const float split = 0.045;
+          const float sharpness = 4.5;
+          const float hotCore = 2.235;
+          const float bodyFill = 0.26;
+          const float gain = 1.0;
+          const float contrast = 1.35;
+          const float keyLight = 0.705;
+          const float rimStrength = 0.45;
+
+          const vec3 deep = vec3(0.0667, 0.1020, 0.1804);
+          const vec3 line = vec3(0.2471, 0.8235, 1.0);
+          const vec3 hot = vec3(1.0, 0.9569, 0.8392);
+          const vec3 sheen = vec3(0.6627, 0.8471, 1.0);
+
+          vec3 rayOrigin = vec3(0.0, 0.04, 3.8);
+          vec3 rayDirection = normalize(vec3(uv.x, uv.y - 0.025, -2.65));
+
+          float yaw = -0.62 + u_time * 0.08;
+          float pitch = 0.48;
+          mat3 rotation = rotateY(yaw) * rotateX(pitch);
+          mat3 inverseRotation = rotateX(-pitch) * rotateY(-yaw);
+
+          vec3 objectOrigin = inverseRotation * rayOrigin;
+          vec3 objectDirection = inverseRotation * rayDirection;
+          vec3 inverseDirection = 1.0 / objectDirection;
+          vec3 t0 = (-vec3(halfSize) - objectOrigin) * inverseDirection;
+          vec3 t1 = ( vec3(halfSize) - objectOrigin) * inverseDirection;
+          vec3 tMin = min(t0, t1);
+          vec3 tMax = max(t0, t1);
+          float nearHit = max(max(tMin.x, tMin.y), tMin.z);
+          float farHit = min(min(tMax.x, tMax.y), tMax.z);
+
+          if (nearHit > farHit || farHit < 0.0) {
+            return vec4(0.0);
+          }
+
+          float travel = max(nearHit, 0.0);
+          vec3 hitPoint = objectOrigin + objectDirection * travel;
+          bool roundedHit = false;
+          for (int step = 0; step < 18; ++step) {
+            float distanceToSurface = roundedBoxDistance(
+              hitPoint,
+              halfSize,
+              bevelRadius
+            );
+            if (abs(distanceToSurface) < 0.0015) {
+              roundedHit = true;
+              break;
+            }
+            travel += max(distanceToSurface, 0.002);
+            hitPoint = objectOrigin + objectDirection * travel;
+          }
+
+          if (!roundedHit || travel > farHit + bevelRadius) {
+            return vec4(0.0);
+          }
+
+          vec3 objectNormal = roundedBoxNormal(hitPoint, halfSize, bevelRadius);
+          vec3 normalWeight = abs(objectNormal);
+          vec2 facePosition;
+
+          if (normalWeight.x > normalWeight.y && normalWeight.x > normalWeight.z) {
+            facePosition = vec2(-hitPoint.z, hitPoint.y) / halfSize;
+          } else if (normalWeight.y > normalWeight.z) {
+            facePosition = vec2(hitPoint.x, -hitPoint.z) / halfSize;
+          } else {
+            facePosition = vec2(hitPoint.x, hitPoint.y) / halfSize;
+          }
+
+          vec3 normal = rotation * objectNormal;
+          vec2 p = facePosition * scale / (1.0 + bulge);
+
+          float swirl = u_time * 0.075;
+          p = mat2(cos(swirl), -sin(swirl),
+                   sin(swirl),  cos(swirl)) * p;
+          p.x += u_time * 0.18;
+          p += vec2(0.37, 0.21);
+
+          vec2 cell = floor(p);
+          float time = u_time * 0.42;
+          float breathe = 1.0 + pulse
+                        * sin(TAU * hash(cell) + time * 0.35);
+
+          vec2 c = p;
+          for (int octave = 0; octave < OCTAVES; ++octave) {
+            float i = float(octave) + 1.0;
+            vec2 d = cell - c;
+            vec2 latticePole = poleStrength * breathe * d
+                             / (d * d + vec2(poleSoftness));
+            c += warp * cos(i * c.yx + latticePole + time) / i;
+          }
+
+          vec3 phase = vec3(c.y) + vec3(0.0, 2.0, 1.0) * split;
+          vec3 thread = exp(-sharpness * abs(sin(phase)));
+          float level = dot(thread, vec3(1.0 / 3.0));
+
+          vec3 color = deep * bodyFill;
+          color += thread
+                 * mix(line, hot, smoothstep(0.12, 1.0, level))
+                 * gain;
+
+          float core = level * level;
+          core *= core;
+          color += hot * core * hotCore;
+          color = pow(max(color, vec3(0.0)), vec3(contrast));
+
+          vec3 viewDirection = -rayDirection;
+          vec3 lightDirection = normalize(vec3(-0.45, 0.65, 0.72));
+          float lambert = max(dot(normal, lightDirection), 0.0);
+          float facing = max(dot(normal, viewDirection), 0.0);
+          float specular = pow(
+            max(dot(reflect(-lightDirection, normal), viewDirection), 0.0),
+            72.0
+          );
+          float broadSpecular = pow(
+            max(dot(reflect(-lightDirection, normal), viewDirection), 0.0),
+            12.0
+          );
+
+          color *= 0.24 + keyLight * lambert;
+          color += hot * specular * 1.4;
+          color += sheen * broadSpecular * 0.16;
+
+          float fresnel = 1.0 - facing;
+          fresnel = fresnel * fresnel * fresnel;
+          vec3 reflectionDirection = reflect(rayDirection, normal);
+          float sky = smoothstep(-0.35, 0.9, reflectionDirection.y);
+          vec3 environment = mix(
+            vec3(0.008, 0.014, 0.025),
+            vec3(0.22, 0.42, 0.52),
+            sky
+          );
+          color += environment * (0.1 + 0.55 * fresnel);
+          color += sheen * rimStrength * fresnel;
+
+          return vec4(color, 1.0);
+        }
+
+        void main() {
+          vec4 color = vec4(0.0);
+          for (int x = 0; x < AA; ++x) {
+            for (int y = 0; y < AA; ++y) {
+              vec2 offset = (vec2(float(x), float(y)) + 0.5)
+                          / float(AA) - 0.5;
+              color += renderCube(gl_FragCoord.xy + offset);
+            }
+          }
+          color /= float(AA * AA);
+
+          gl_FragColor = vec4(max(color.rgb, vec3(0.0)), 1.0);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const message = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(message);
+        }
+        return shader;
+      }
+
+      function createProgram() {
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+        return program;
+      }
+
+      let program;
+      try {
+        program = createProgram();
+      } catch (error) {
+        canvas.style.display = "none";
+        errorBox.style.display = "block";
+        errorBox.textContent = `Shader compilation failed:\n${error.message}`;
+        return;
+      }
+
+      const vertices = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+        gl.STATIC_DRAW
+      );
+
+      gl.useProgram(program);
+      const position = gl.getAttribLocation(program, "a_position");
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+      const resolution = gl.getUniformLocation(program, "u_resolution");
+      const time = gl.getUniformLocation(program, "u_time");
+      const startedAt = performance.now();
+
+      function resize() {
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.round(canvas.clientWidth * pixelRatio);
+        const height = Math.round(canvas.clientHeight * pixelRatio);
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          gl.viewport(0, 0, width, height);
+        }
+      }
+
+      function frame(now) {
+        resize();
+        gl.uniform2f(resolution, canvas.width, canvas.height);
+        gl.uniform1f(time, (now - startedAt) / 1000);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+
+</html>

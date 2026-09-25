@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Glass Cube</title>
+  <style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}
+    canvas{display:block;width:100%;height:100%}
+    #error{display:none;padding:24px;color:#fff;font:14px/1.5 system-ui}
+  </style>
+</head>
+<body>
+<canvas id="orb" aria-label="Rotating iridescent glass cube"></canvas><pre id="error"></pre>
+<script>
+(()=>{
+const canvas=document.querySelector('#orb'),errorBox=document.querySelector('#error');
+const gl=canvas.getContext('webgl',{alpha:false,antialias:false,powerPreference:'high-performance'});
+if(!gl){errorBox.style.display='block';errorBox.textContent='This effect requires WebGL.';return}
+const vertexSource=`attribute vec2 a_position;void main(){gl_Position=vec4(a_position,0.,1.);}`;
+const fragmentSource=`
+precision highp float;
+#define AA 2
+uniform vec2 u_resolution;uniform float u_time;
+mat3 rotX(float a){float c=cos(a),s=sin(a);return mat3(1,0,0,0,c,s,0,-s,c);}
+mat3 rotY(float a){float c=cos(a),s=sin(a);return mat3(c,0,-s,0,1,0,s,0,c);}
+mat3 rotZ(float a){float c=cos(a),s=sin(a);return mat3(c,s,0,-s,c,0,0,0,1);}
+float boxSdf(vec3 p,vec3 b,float r){vec3 q=abs(p)-b+r;return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.)-r;}
+vec3 boxNormal(vec3 p){const float e=.0015;vec2 h=vec2(e,0.);return normalize(vec3(
+boxSdf(p+h.xyy,vec3(.81),.105)-boxSdf(p-h.xyy,vec3(.81),.105),
+boxSdf(p+h.yxy,vec3(.81),.105)-boxSdf(p-h.yxy,vec3(.81),.105),
+boxSdf(p+h.yyx,vec3(.81),.105)-boxSdf(p-h.yyx,vec3(.81),.105)));}
+vec3 spectrum(float x){return .56+.44*cos(6.28318*(x+vec3(0.,.33,.67)));}
+float hash(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
+vec4 render(vec2 fc){
+ vec2 uv=(2.*fc-u_resolution)/min(u_resolution.x,u_resolution.y);
+ float halo=exp(-1.8*dot(uv,uv));vec3 background=vec3(.018,.025,.045)*halo;
+ float motion=u_time*.27;
+ mat3 rotation=rotZ(-.10+.15*sin(motion*.73))*rotX(.37+motion*.63)*rotY(-.58+motion);
+ mat3 inv=rotY(.58-motion)*rotX(-.37-motion*.63)*rotZ(.10-.15*sin(motion*.73));
+ vec3 ro=inv*vec3(0.,.01,7.20),rd=inv*normalize(vec3(uv.x,uv.y,-4.45));
+ vec3 idir=1./rd,a=(-vec3(.82)-ro)*idir,b=(vec3(.82)-ro)*idir;
+ vec3 mn=min(a,b),mx=max(a,b);float nearT=max(max(mn.x,mn.y),mn.z),farT=min(min(mx.x,mx.y),mx.z);
+ if(nearT>farT||farT<0.)return vec4(background,1.);
+ float t=max(nearT,0.);vec3 p=ro+rd*t;bool hit=false;
+ for(int i=0;i<24;i++){float d=boxSdf(p,vec3(.81),.105);if(abs(d)<.0012){hit=true;break;}t+=max(d,.0015);p=ro+rd*t;}
+ if(!hit||t>farT+.12)return vec4(background,1.);
+ vec3 on=boxNormal(p),n=rotation*on,an=abs(on);vec2 face;float faceId,faceSign;
+ if(an.x>an.y&&an.x>an.z){face=vec2(-p.z,p.y)/.81;faceId=0.;faceSign=sign(on.x);}
+ else if(an.y>an.z){face=vec2(p.x,-p.z)/.81;faceId=1.;faceSign=sign(on.y);}
+ else{face=vec2(p.x,p.y)/.81;faceId=2.;faceSign=sign(on.z);}
+ float square=max(abs(face.x),abs(face.y)),frame=smoothstep(.61,.90,square);
+ float bevel=1.-smoothstep(.18,.76,max(an.x,max(an.y,an.z))),corner=smoothstep(.70,.98,min(abs(face.x),abs(face.y)));
+ vec3 view=-normalize(rotation*rd);float facing=max(dot(n,view),0.),fres=pow(1.-facing,2.2);
+ vec3 wp=rotation*p;float band=.5+.5*sin(10.*wp.y+5.*wp.x-2.5*wp.z);
+ vec3 rainbow=spectrum(.10+wp.y*.22+wp.x*.10+fres*.22),glass=mix(vec3(.74,.94,1.),rainbow,.58);
+ glass*=.54+1.55*fres+.42*band;
+ vec3 light=normalize(vec3(-.45,.75,.60));float spec=pow(max(dot(reflect(-light,n),view),0.),52.);
+ float broad=pow(max(dot(reflect(-light,n),view),0.),7.),rim=frame+bevel*.8+corner*.35;
+ vec2 q=face*3.15;q=mat2(cos(u_time*.08),-sin(u_time*.08),sin(u_time*.08),cos(u_time*.08))*q;
+ q+=vec2(u_time*.16,.21);vec2 cell=floor(q),c=q;
+ float breathe=1.+.30*sin(6.28318*hash(cell)+u_time*.15);
+ for(int octave=0;octave<8;octave++){float i=float(octave)+1.;vec2 d=cell-c;c+=2.*cos(i*c.yx+.13*breathe*d/(d*d+vec2(.001))+u_time*.42)/i;}
+ vec3 threads=exp(-4.5*abs(sin(vec3(c.y)+vec3(0.,2.,1.)*.045)));
+ float level=dot(threads,vec3(.3333));
+ vec3 patternTint=mix(rainbow,glass,.58);
+ vec3 panel=vec3(.010,.010,.018)+patternTint*.035;
+ panel+=threads*mix(patternTint*.82,glass*1.12,smoothstep(.12,1.,level));
+ float core=level*level;panel+=mix(vec3(1.),glass,.42)*core*core*2.1;
+ float panelMask=1.-smoothstep(.59,.69,square);vec3 color=mix(glass*.42,panel,panelMask);
+ color+=glass*rim*(.72+.55*corner);color+=vec3(1.,.91,.82)*spec*1.8+glass*broad*.28;
+ color+=vec3(.42,.70,1.)*fres*.18;color=mix(background,color,clamp(.84+rim*.18,0.,1.));
+ color=pow(max(color,0.),vec3(.88));return vec4(color,1.);
+}
+void main(){vec4 c=vec4(0.);for(int x=0;x<AA;x++)for(int y=0;y<AA;y++){vec2 o=(vec2(float(x),float(y))+.5)/float(AA)-.5;c+=render(gl_FragCoord.xy+o);}gl_FragColor=c/float(AA*AA);}`;
+function compile(type,source){const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(shader));return shader}
+let program;try{program=gl.createProgram();gl.attachShader(program,compile(gl.VERTEX_SHADER,vertexSource));gl.attachShader(program,compile(gl.FRAGMENT_SHADER,fragmentSource));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program))}catch(error){canvas.style.display='none';errorBox.style.display='block';errorBox.textContent='Shader compilation failed:\n'+error.message;return}
+const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);gl.useProgram(program);
+const pos=gl.getAttribLocation(program,'a_position');gl.enableVertexAttribArray(pos);gl.vertexAttribPointer(pos,2,gl.FLOAT,false,0,0);
+const resolution=gl.getUniformLocation(program,'u_resolution'),time=gl.getUniformLocation(program,'u_time');
+const startedAt=performance.now();
+function resize(){const d=Math.min(devicePixelRatio||1,2),w=Math.round(canvas.clientWidth*d),h=Math.round(canvas.clientHeight*d);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}}
+function frame(now){resize();gl.uniform2f(resolution,canvas.width,canvas.height);gl.uniform1f(time,(now-startedAt)/1000);gl.drawArrays(gl.TRIANGLES,0,6);requestAnimationFrame(frame)}requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

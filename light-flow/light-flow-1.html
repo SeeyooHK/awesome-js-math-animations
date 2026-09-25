@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flowing Light Wave</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #error {
+      display: none;
+      box-sizing: border-box;
+      padding: 24px;
+      color: #fff;
+      font: 14px/1.5 system-ui, sans-serif;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="orb" aria-label="Animated flowing light wave"></canvas>
+  <pre id="error"></pre>
+
+  <script>
+    (() => {
+      const canvas = document.querySelector("#orb");
+      const errorBox = document.querySelector("#error");
+      const gl = canvas.getContext("webgl", {
+        alpha: false,
+        antialias: false,
+        powerPreference: "high-performance"
+      });
+
+      if (!gl) {
+        errorBox.style.display = "block";
+        errorBox.textContent = "This effect requires WebGL.";
+        return;
+      }
+
+      const vertexSource = `
+        attribute vec2 a_position;
+
+        void main() {
+          gl_Position = vec4(a_position, 0.0, 1.0);
+        }
+      `;
+
+      const fragmentSource = `
+        precision highp float;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+                     mix(hash21(i + vec2(0.0, 1.0)), hash21(i + 1.0), f.x), f.y);
+        }
+
+        float fbm(vec2 p) {
+          float value = 0.0;
+          float amplitude = 0.5;
+          mat2 turn = mat2(0.80, -0.60, 0.60, 0.80);
+          for (int i = 0; i < 6; i++) {
+            value += amplitude * noise(p);
+            p = turn * p * 2.03 + 17.17;
+            amplitude *= 0.5;
+          }
+          return value;
+        }
+
+        float waveCurve(float x, float time) {
+          float hook = smoothstep(-1.48, 0.28, x);
+          float y = 0.68 - 1.17 * hook - 0.095 * (x + 0.45);
+          y += 0.035 * sin(x * 2.0 - time * 0.42);
+          y += 0.035 * (fbm(vec2(x * 1.7 - time * 0.12, 3.1)) - 0.5);
+          return y;
+        }
+
+        void main() {
+          vec2 uv = (2.0 * gl_FragCoord.xy - u_resolution)
+                  / min(u_resolution.x, u_resolution.y);
+          float time = u_time;
+          float curve = waveCurve(uv.x, time);
+          float d = uv.y - curve;
+          float slope = (waveCurve(uv.x + 0.012, time) - curve) / 0.012;
+
+          // Coordinates that follow the hook keep every texture stroke moving
+          // along the breaking wave instead of sliding across the screen.
+          float along = uv.x + d * slope * 0.18;
+          vec2 coarseWarp = vec2(
+            fbm(vec2(along * 0.72 - time * 0.08, d * 1.7)),
+            fbm(vec2(along * 0.95 + 8.0, d * 2.2 - time * 0.11))
+          ) - 0.5;
+          vec2 flow = vec2(along - time * 0.18, d * 7.0)
+                    + coarseWarp * vec2(0.75, 2.2);
+
+          float billow = fbm(flow * vec2(1.05, 0.72));
+          float fine = fbm(flow * vec2(2.7, 1.65) + vec2(time * 0.12, 4.0));
+          float micro = fbm(vec2(
+            along * 7.5 - time * 0.55,
+            d * 32.0 + coarseWarp.y * 5.0
+          ));
+          float streakField = fbm(vec2(
+            along * 1.65 - time * 0.22,
+            d * 15.0 + coarseWarp.x * 6.0
+          ));
+          float ribbons = smoothstep(0.58, 0.78, streakField);
+          ribbons *= 0.35 + 0.65 * noise(vec2(along * 3.2 - time * 0.3, d * 2.0));
+
+          float edgeJitter = (fine - 0.5) * 0.12;
+          float body = smoothstep(-0.46 + edgeJitter, -0.28 + edgeJitter, d);
+          float upperFade = 1.0 - smoothstep(0.82, 1.28, uv.y);
+          float density = body * upperFade;
+
+          float face = exp(-max(-d, 0.0) * 1.7) * smoothstep(-0.5, -0.02, d);
+          float depth = clamp(0.10 + billow * 0.62 + ribbons * 0.42, 0.0, 1.15);
+          vec3 color = mix(vec3(0.004, 0.003, 0.035), vec3(0.025, 0.055, 0.34), density);
+          color += density * vec3(0.075, 0.095, 0.58) * depth;
+          color += density * vec3(0.16, 0.07, 0.52) * fine * 0.46;
+          color += face * body * vec3(0.055, 0.17, 0.68) * (0.16 + ribbons * 0.84);
+          color *= 0.66 + micro * 0.54;
+          float shadow = smoothstep(0.38, 0.82, fbm(vec2(uv.x * 0.72 + time * 0.035, uv.y * 2.25)));
+          color *= 1.0 - shadow * smoothstep(0.0, 0.65, d) * 0.62;
+
+          float width = mix(0.08, 0.30, smoothstep(-1.45, -0.42, uv.x));
+          float brokenEdge = d + (fine - 0.5) * 0.16 + (billow - 0.5) * 0.09;
+          float crest = exp(-abs(brokenEdge) / width);
+          crest *= smoothstep(-0.38, -0.04, d + 0.32);
+          float hot = crest * (0.30 + billow * 0.70 + fine * 0.30 + micro * 0.34);
+          vec3 fire = mix(vec3(1.0, 0.075, 0.012), vec3(1.0, 0.62, 0.12), clamp(hot, 0.0, 1.0));
+          float fireMask = clamp(crest * (0.58 + micro * 0.52), 0.0, 0.94);
+          color = mix(color * 0.68, fire * (0.34 + hot * 0.86), fireMask);
+          color += fire * hot * micro * 0.18;
+
+          // Sparse incandescent spray rides just above the crest.
+          float sprayZone = exp(-max(d, 0.0) * 5.0) * smoothstep(-0.03, 0.16, d);
+          vec2 cells = floor((uv + vec2(time * 0.12, -time * 0.035)) * 115.0);
+          float spray = pow(hash21(cells), 25.0) * sprayZone * (0.25 + fine);
+          spray *= smoothstep(0.45, 0.75, noise(vec2(along * 4.0 - time, d * 5.0)));
+          color += vec3(1.0, 0.38, 0.08) * spray * 1.8;
+
+          color *= density + crest * 0.75 + spray;
+          color = 1.0 - exp(-color * 1.18);
+          color = pow(max(color, 0.0), vec3(0.82));
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const message = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(message);
+        }
+        return shader;
+      }
+
+      function createProgram() {
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program));
+        }
+        return program;
+      }
+
+      let program;
+      try {
+        program = createProgram();
+      } catch (error) {
+        canvas.style.display = "none";
+        errorBox.style.display = "block";
+        errorBox.textContent = `Shader compilation failed:\n${error.message}`;
+        return;
+      }
+
+      const vertices = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+        gl.STATIC_DRAW
+      );
+
+      gl.useProgram(program);
+      const position = gl.getAttribLocation(program, "a_position");
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+      const resolution = gl.getUniformLocation(program, "u_resolution");
+      const time = gl.getUniformLocation(program, "u_time");
+      const startedAt = performance.now();
+
+      function resize() {
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.round(canvas.clientWidth * pixelRatio);
+        const height = Math.round(canvas.clientHeight * pixelRatio);
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          gl.viewport(0, 0, width, height);
+        }
+      }
+
+      function frame(now) {
+        resize();
+        gl.uniform2f(resolution, canvas.width, canvas.height);
+        gl.uniform1f(time, (now - startedAt) / 1000);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+
+</html>
