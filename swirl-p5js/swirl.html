@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swirl — p5.js</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #000;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100vw;
+      max-height: 100vh;
+      width: auto !important;
+      height: auto !important;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+
+<body>
+  <script>
+    let f = 0;
+    const R = 230;
+    const B = 255;
+
+    function setup() {
+      createCanvas(3 * B, 3 * B);
+      noStroke();
+    }
+
+    function draw() {
+      if (!(f & 5)) background(0, f ? 3 : B);
+
+      const t = f++ / R;
+      let u = t;
+      // Stop sampling when successive points are less than a pixel apart.
+      for (let ring = 0; ring < 12; ring++) {
+        const U = 0.3 * sin(u - t);
+        if (abs(0.3 + U) < 0.001) break;
+        u += 0.3 + U;
+        const q = sin(u);
+        const p = cos(u);
+        if (!(u < t + TAU)) break;
+
+        let v = u;
+        for (let step = 0; step < 512; step++) {
+          const V = 0.4 * cos(v - t);
+          if (abs(0.3 - V) < 0.001) break;
+          v += 0.3 - V;
+          const j = sin(v);
+          const k = cos(v);
+          const g = B * p;
+          fill(B * q, g, B - g);
+          if (!(v < u + TAU)) break;
+
+          circle(B + R * q * k, B + R * q * j, 1 + abs(q));
+        }
+      }
+    }
+  </script>
+</body>
+
+</html>

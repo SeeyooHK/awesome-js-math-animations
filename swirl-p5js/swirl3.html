@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swirl — p5.js</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #000;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100vw;
+      max-height: 100vh;
+      width: auto !important;
+      height: auto !important;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.3/lib/p5.min.js"></script>
+</head>
+
+<body>
+  <script>
+    let f = 0;
+    const r = 190;
+    const b = 255;
+    const w = 200;
+
+    function setup() {
+      createCanvas(2 * w, 2 * w);
+      noStroke();
+      background(0);
+    }
+
+    function draw() {
+      f++;
+      if (!(f & 3)) background(0, 8);
+      const t = f / 200;
+      const dt = 0.8 * sin(t);
+
+      for (let u = t; u < t + TAU; u += 1 - dt) {
+        const q = sin(u);
+        const p = cos(u);
+        for (let v = t; v < t + TAU; v += 1 + dt) {
+          const j = sin(v);
+          const k = cos(v);
+          const c = b * j;
+          fill(c, b * p, b - c);
+          circle(w + r * q * k, w + r * q * j, 5 * q);
+        }
+      }
+    }
+  </script>
+</body>
+
+</html>

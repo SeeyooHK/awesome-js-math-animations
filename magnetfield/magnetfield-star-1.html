@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquid Magnetic Field Star</title>
+<style>
+  html, body { margin: 0; overflow: hidden; background: black; }
+  canvas { display: block; touch-action: none; }
+  #status { position: absolute; margin: 24px; color: #bbb; font: 14px sans-serif; }
+</style>
+<script type="importmap">
+{"imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="status">Loading magnetic field…</div>
+<!-- Visual reference: https://jeonghopark.de/magnetfield_v02/ by Jeong Ho Park.
+     Readable reimplementation: WebGL surface shader + CPU particle advection.
+     Drag to orbit, scroll / pinch to zoom. Only Three.js is loaded externally. -->
+<script type="module">
+const status = document.querySelector('#status');
+try {
+  const THREE = await import('three');
+  const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+
+  // Adjust these parameters to change the field's density and motion.
+  const RADIUS = 5;
+  const STAR_INNER_RADIUS = RADIUS * 0.45;
+  const STAR_DEPTH = 1.6;
+  const LIQUID_STRENGTH = 1;
+  let liquidTime = 0;
+  const POLE_COUNT = 70;
+  const PARTICLE_COUNT = 6500;
+  const TRAIL_LENGTH = 24;
+  const FIXED_STEP = 1 / 60;
+  const MAX_AGE = 6;
+  const scene = new THREE.Scene();
+  // Rotate the surface, poles, and particle histories together in local space.
+  const star = new THREE.Group();
+  scene.add(star);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
+  camera.position.z = 20;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  document.body.appendChild(renderer.domElement);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.minDistance = 8;
+  controls.maxDistance = 55;
+  controls.enablePan = false;
+
+  // Large slow swells and outward ripples make the liquid motion visible.
+  // The same deformation is used for the surface and its magnetic seeds.
+  function liquidPosition(x, y, z, target) {
+    const swell = LIQUID_STRENGTH * (
+      0.17 * Math.sin(x * 0.65 + y * 0.55 - liquidTime * 1.2)
+      + 0.08 * Math.sin(y * 1.15 - z * 0.8 + liquidTime * 0.9));
+    const twist = LIQUID_STRENGTH * 0.16 * Math.sin(y * 0.7 + liquidTime * 0.8);
+    const outwardWave = Math.sin(Math.hypot(x, y) * 2.5 - liquidTime * 2.8);
+    const cosine = Math.cos(twist), sine = Math.sin(twist);
+    return target.set(
+      (x * cosine - y * sine) * (1 + swell),
+      (x * sine + y * cosine) * (1 + swell),
+      z * (1 - swell * 0.5) + LIQUID_STRENGTH * (
+        0.55 * Math.sin(x * 1.1 + liquidTime) * Math.cos(y * 0.9 - liquidTime * 0.7)
+        + 0.18 * outwardWave)
+    );
+  }
+
+  // Map a unit direction onto a plump five-pointed star. The XY outline is
+  // the intersection of a radial ray with one of the ten straight star edges.
+  // Sharing this map keeps both the mesh and moving poles on the same surface.
+  function starPosition(direction, target) {
+    const sectorAngle = Math.PI / 5;
+    const angle = ((Math.atan2(direction.y, direction.x) - Math.PI / 2)
+      % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    const sector = Math.floor(angle / sectorAngle);
+    const startAngle = sector * sectorAngle;
+    const startRadius = sector % 2 === 0 ? RADIUS : STAR_INNER_RADIUS;
+    const endRadius = sector % 2 === 0 ? STAR_INNER_RADIUS : RADIUS;
+    const ax = Math.cos(startAngle) * startRadius;
+    const ay = Math.sin(startAngle) * startRadius;
+    const bx = Math.cos(startAngle + sectorAngle) * endRadius;
+    const by = Math.sin(startAngle + sectorAngle) * endRadius;
+    const radius = (ax * by - ay * bx)
+      / (Math.cos(angle) * (by - ay) - Math.sin(angle) * (bx - ax));
+    return target.set(direction.x * radius, direction.y * radius, direction.z * STAR_DEPTH);
+  }
+
+  const starGeometry = new THREE.SphereGeometry(1, 192, 128);
+  const vertex = new THREE.Vector3();
+  const starVertices = starGeometry.attributes.position;
+  for (let i = 0; i < starVertices.count; i++) {
+    vertex.fromBufferAttribute(starVertices, i).normalize();
+    starPosition(vertex, vertex);
+    starVertices.setXYZ(i, vertex.x, vertex.y, vertex.z);
+  }
+  starGeometry.computeVertexNormals();
+  starGeometry.computeBoundingSphere();
+  starGeometry.boundingSphere.radius *= 1.5;
+  const restVertices = new Float32Array(starVertices.array);
+  starVertices.setUsage(THREE.DynamicDrawUsage);
+
+  function updateLiquidSurface() {
+    for (let i = 0; i < starVertices.count; i++) {
+      const offset = i * 3;
+      liquidPosition(restVertices[offset], restVertices[offset + 1], restVertices[offset + 2], vertex);
+      starVertices.setXYZ(i, vertex.x, vertex.y, vertex.z);
+    }
+    starVertices.needsUpdate = true;
+  }
+
+  const poles = [];
+  const poleUniforms = [];
+  const positivePoles = [];
+  const markerGeometry = new THREE.SphereGeometry(1, 12, 8);
+  const positiveMaterial = new THREE.MeshBasicMaterial({ color: 0xffdc73 });
+  const negativeMaterial = new THREE.MeshBasicMaterial({ color: 0xd99a22 });
+  for (let i = 0; i < POLE_COUNT; i++) {
+    const strength = (i < POLE_COUNT / 2 ? 1 : -1) * (0.15 + Math.random() * 0.85);
+    const direction = new THREE.Vector3().randomDirection();
+    const position = starPosition(direction, new THREE.Vector3());
+    liquidPosition(position.x, position.y, position.z, position);
+    const marker = new THREE.Mesh(markerGeometry, strength > 0 ? positiveMaterial : negativeMaterial);
+    marker.scale.setScalar(0.07 + Math.abs(strength) * 0.02);
+    star.add(marker);
+    const pole = { direction, position, strength, marker,
+      axis: new THREE.Vector3().randomDirection(), speed: 0.06 + Math.random() * 0.28 };
+    poles.push(pole);
+    poleUniforms.push(new THREE.Vector4(position.x, position.y, position.z, strength));
+    if (strength > 0) positivePoles.push(pole);
+  }
+
+  // Contours of scalar potential V = sum(q / distance), evaluated on the star.
+  // Screen-space derivatives keep the thin contours smooth at every zoom level.
+  const surface = new THREE.Mesh(starGeometry,
+    new THREE.ShaderMaterial({
+      uniforms: { poles: { value: poleUniforms }, liquidTime: { value: 0 } },
+      vertexShader: `
+        varying vec3 fieldPosition;
+        void main() {
+          fieldPosition = position;
+          vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * viewPosition;
+        }`,
+      fragmentShader: `
+        uniform vec4 poles[${POLE_COUNT}];
+        uniform float liquidTime;
+        varying vec3 fieldPosition;
+        void main() {
+          // Flowing distortion bends the field contours like light through water.
+          vec3 flow = vec3(
+            sin(fieldPosition.y * 1.6 - liquidTime * 1.3),
+            sin(fieldPosition.x * 1.4 + liquidTime),
+            sin(fieldPosition.y + fieldPosition.x - liquidTime)
+          );
+          vec3 liquidPosition = fieldPosition + flow * 0.16;
+          float potential = 0.0;
+          for (int i = 0; i < ${POLE_COUNT}; i++) {
+            potential += poles[i].w / max(distance(liquidPosition, poles[i].xyz), 0.001);
+          }
+          float bands = potential / 0.07;
+          float edge = min(fract(bands), 1.0 - fract(bands));
+          float width = max(fwidth(bands), 0.00001);
+          float contour = (1.0 - smoothstep(width * 0.5, width * 1.5, edge))
+                        * (1.0 - smoothstep(0.3, 0.6, width));
+          // Keep the surface nearly black so the field lines define the star.
+          // Gold contours give the star its color without a lit solid shell.
+          vec3 base = vec3(0.012, 0.007, 0.001);
+          vec3 ink = vec3(1.0, 0.65, 0.16);
+          // Moving glints stay confined to the gold contours, leaving dark gaps.
+          float ripple = sin(fieldPosition.x * 2.0 - liquidTime * 1.4
+                           + sin(fieldPosition.y * 1.6 + liquidTime));
+          float shimmer = 0.55 + 0.22 * pow(0.5 + 0.5 * ripple, 6.0);
+          // Thin traveling gold ribbons suggest water caustics without filling
+          // the star with a solid material. Interference breaks up the rings.
+          float wave = length(fieldPosition.xy + flow.xy * 0.3) * 5.5 - liquidTime * 3.0;
+          float ribbons = pow(0.5 + 0.5 * sin(wave), 20.0);
+          float interference = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(
+            fieldPosition.x * 3.0 - fieldPosition.y * 2.0 + liquidTime * 1.5), 2.0);
+          vec3 color = mix(base, ink, contour * shimmer);
+          color += vec3(1.0, 0.63, 0.13) * ribbons * interference * 0.32;
+          gl_FragColor = vec4(color, 1.0);
+        }`
+    }));
+  star.add(surface);
+
+  // A real 3D lattice gives the same vanishing lines when the camera orbits.
+  const gridVertices = [];
+  for (let a = -60; a <= 60; a += 5) {
+    for (let b = -60; b <= 60; b += 5) {
+      gridVertices.push(-60,a,b, 60,a,b, a,-60,b, a,60,b, a,b,-60, a,b,60);
+    }
+  }
+  const gridGeometry = new THREE.BufferGeometry();
+  gridGeometry.setAttribute('position', new THREE.Float32BufferAttribute(gridVertices, 3));
+  scene.add(new THREE.LineSegments(gridGeometry, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    vertexShader: `
+      varying vec3 gridPosition;
+      void main() {
+        gridPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec3 gridPosition;
+      void main() {
+        float radius = length(gridPosition);
+        float fade = smoothstep(12.0, 22.0, radius) * (1.0 - smoothstep(30.0, 60.0, radius));
+        gl_FragColor = vec4(0.12, 0.32, 0.72, fade * 0.14);
+      }`
+  })));
+
+  // Each particle owns a circular history buffer, avoiding per-frame allocations.
+  const positions = new Float32Array(PARTICLE_COUNT * 3);
+  const ages = new Float32Array(PARTICLE_COUNT);
+  const history = new Float32Array(PARTICLE_COUNT * TRAIL_LENGTH * 3);
+  const trailVertices = new Float32Array(PARTICLE_COUNT * (TRAIL_LENGTH - 1) * 6);
+  const trailColors = new Float32Array(trailVertices.length);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(trailVertices, 3).setUsage(THREE.DynamicDrawUsage));
+  geometry.setAttribute('color', new THREE.BufferAttribute(trailColors, 3).setUsage(THREE.DynamicDrawUsage));
+  const trails = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  trails.frustumCulled = false;
+  star.add(trails);
+  const headsGeometry = new THREE.BufferGeometry();
+  headsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+  const heads = new THREE.Points(headsGeometry, new THREE.PointsMaterial({
+    color: 0x3b91ff, size: 0.025, transparent: true, opacity: 0.7,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  heads.frustumCulled = false;
+  star.add(heads);
+
+  // Embers detach in world space, so their buoyant drift does not rotate with
+  // the star. They cool from yellow-orange to red and fade as they rise.
+  const EMBER_COUNT = 850;
+  const emberPositions = new Float32Array(EMBER_COUNT * 3);
+  const emberVelocities = new Float32Array(EMBER_COUNT * 3);
+  const emberAges = new Float32Array(EMBER_COUNT);
+  const emberLifetimes = new Float32Array(EMBER_COUNT);
+  const emberHeat = new Float32Array(EMBER_COUNT);
+  const emberSizes = new Float32Array(EMBER_COUNT);
+  const emberGeometry = new THREE.BufferGeometry();
+  emberGeometry.setAttribute('position', new THREE.BufferAttribute(emberPositions, 3).setUsage(THREE.DynamicDrawUsage));
+  emberGeometry.setAttribute('heat', new THREE.BufferAttribute(emberHeat, 1).setUsage(THREE.DynamicDrawUsage));
+  emberGeometry.setAttribute('size', new THREE.BufferAttribute(emberSizes, 1));
+  const emberMaterial = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { time: { value: 0 }, pixelRatio: { value: renderer.getPixelRatio() } },
+    vertexShader: `
+      attribute float heat;
+      attribute float size;
+      uniform float time;
+      uniform float pixelRatio;
+      varying float warmth;
+      varying float flicker;
+      void main() {
+        warmth = heat;
+        flicker = 0.72 + 0.28 * sin(time * 11.0 + size * 27.0);
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        gl_PointSize = clamp(size * pixelRatio * 100.0 / max(-viewPosition.z, 0.1), 1.0, 24.0);
+      }`,
+    fragmentShader: `
+      varying float warmth;
+      varying float flicker;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5) * 2.0;
+        if (radius > 1.0) discard;
+        float glow = exp(-radius * radius * 5.0) * (1.0 - smoothstep(0.7, 1.0, radius));
+        float core = exp(-radius * radius * 36.0);
+        vec3 ember = mix(vec3(1.0, 0.055, 0.005), vec3(1.0, 0.48, 0.07), warmth);
+        ember += vec3(0.35, 0.4, 0.16) * core * warmth;
+        float fade = pow(warmth, 0.7) * smoothstep(0.0, 0.08, 1.0 - warmth);
+        gl_FragColor = vec4(ember, glow * fade * flicker);
+      }`
+  });
+  const embers = new THREE.Points(emberGeometry, emberMaterial);
+  embers.frustumCulled = false;
+  scene.add(embers);
+  const emberOrigin = new THREE.Vector3();
+  const emberDirection = new THREE.Vector3();
+
+  function respawnEmber(index) {
+    const offset = index * 3;
+    const pole = positivePoles[Math.floor(Math.random() * positivePoles.length)];
+    emberOrigin.copy(pole.position).multiplyScalar(1.035);
+    star.localToWorld(emberOrigin);
+    emberDirection.copy(emberOrigin).normalize().multiplyScalar(0.4 + Math.random() * 0.8);
+    emberPositions[offset] = emberOrigin.x + (Math.random() - 0.5) * 0.15;
+    emberPositions[offset + 1] = emberOrigin.y + (Math.random() - 0.5) * 0.15;
+    emberPositions[offset + 2] = emberOrigin.z + (Math.random() - 0.5) * 0.15;
+    emberVelocities[offset] = emberDirection.x + (Math.random() - 0.5) * 0.4;
+    emberVelocities[offset + 1] = emberDirection.y + 0.45;
+    emberVelocities[offset + 2] = emberDirection.z + (Math.random() - 0.5) * 0.4;
+    emberAges[index] = 0;
+    emberLifetimes[index] = 2.5 + Math.random() * 3;
+  }
+  for (let i = 0; i < EMBER_COUNT; i++) {
+    emberSizes[i] = 0.65 + Math.random() * 1.35;
+    respawnEmber(i);
+    // Stagger lifetimes so emission is continuous instead of one synchronized burst.
+    emberAges[i] = Math.random() * emberLifetimes[i];
+    for (let axis = 0; axis < 3; axis++) {
+      emberPositions[i * 3 + axis] += emberVelocities[i * 3 + axis] * emberAges[i];
+    }
+  }
+
+  function updateEmbers(delta) {
+    star.updateMatrixWorld(true);
+    for (let i = 0; i < EMBER_COUNT; i++) {
+      const offset = i * 3;
+      emberAges[i] += delta;
+      if (emberAges[i] >= emberLifetimes[i]) respawnEmber(i);
+      emberVelocities[offset + 1] += 0.23 * delta;
+      const curl = Math.sin(liquidTime * 1.4 + emberPositions[offset + 1] * 1.2 + i) * 0.25;
+      emberPositions[offset] += (emberVelocities[offset] + curl) * delta;
+      emberPositions[offset + 1] += emberVelocities[offset + 1] * delta;
+      emberPositions[offset + 2] += (emberVelocities[offset + 2] - curl * 0.5) * delta;
+      emberHeat[i] = 1 - emberAges[i] / emberLifetimes[i];
+    }
+    emberGeometry.attributes.position.needsUpdate = true;
+    emberGeometry.attributes.heat.needsUpdate = true;
+    emberMaterial.uniforms.time.value = liquidTime;
+  }
+
+  function respawn(index) {
+    const pole = positivePoles[index % positivePoles.length];
+    const offset = index * 3;
+    positions[offset] = pole.position.x + (Math.random() - 0.5) * 0.2;
+    positions[offset + 1] = pole.position.y + (Math.random() - 0.5) * 0.2;
+    positions[offset + 2] = pole.position.z + (Math.random() - 0.5) * 0.2;
+    ages[index] = 0;
+    // Clear old history so respawning never draws a line across the star.
+    for (let sample = 0; sample < TRAIL_LENGTH; sample++) {
+      const h = (index * TRAIL_LENGTH + sample) * 3;
+      history[h] = positions[offset];
+      history[h + 1] = positions[offset + 1];
+      history[h + 2] = positions[offset + 2];
+    }
+  }
+  for (let i = 0; i < PARTICLE_COUNT; i++) { respawn(i); ages[i] = Math.random() * MAX_AGE; }
+
+  let historyHead = 0;
+  let stepCount = 0;
+  function simulate() {
+    liquidTime += FIXED_STEP;
+    poles.forEach((pole, i) => {
+      pole.direction.applyAxisAngle(pole.axis, pole.speed * FIXED_STEP).normalize();
+      starPosition(pole.direction, pole.position);
+      liquidPosition(pole.position.x, pole.position.y, pole.position.z, pole.position);
+      pole.marker.position.copy(pole.position).multiplyScalar(1.01);
+      poleUniforms[i].set(pole.position.x, pole.position.y, pole.position.z, pole.strength);
+    });
+    const recordHistory = stepCount++ % 4 === 0;
+    if (recordHistory) historyHead = (historyHead + 1) % TRAIL_LENGTH;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const p = i * 3;
+      const x = positions[p], y = positions[p + 1], z = positions[p + 2];
+      let fx = 0, fy = 0, fz = 0, captured = false;
+      for (let j = 0; j < POLE_COUNT; j++) {
+        const pole = poleUniforms[j];
+        const dx = x - pole.x, dy = y - pole.y, dz = z - pole.z;
+        const distanceSquared = Math.max(dx*dx + dy*dy + dz*dz, 0.000001);
+        if (pole.w < 0 && distanceSquared < 0.0225) captured = true;
+        const force = pole.w / (distanceSquared * Math.sqrt(distanceSquared));
+        fx += dx * force; fy += dy * force; fz += dz * force;
+      }
+      const length = Math.hypot(fx, fy, fz);
+      ages[i] += FIXED_STEP;
+      if (captured || ages[i] > MAX_AGE || x*x+y*y+z*z > 126 || length < 1e-10) {
+        respawn(i);
+      } else {
+        const speed = 1.2 * FIXED_STEP / length;
+        positions[p] += fx * speed;
+        positions[p + 1] += fy * speed;
+        positions[p + 2] += fz * speed;
+        // A gentle circulating current curls the blue trails around the field.
+        const current = LIQUID_STRENGTH * 0.18 * FIXED_STEP;
+        positions[p] += current * Math.sin(y * 0.8 + liquidTime);
+        positions[p + 1] += current * Math.sin(z * 0.8 - liquidTime * 0.7);
+        positions[p + 2] += current * Math.sin(x * 0.8 + liquidTime * 0.6);
+      }
+      if (recordHistory) {
+        const h = (i * TRAIL_LENGTH + historyHead) * 3;
+        history[h] = positions[p]; history[h + 1] = positions[p + 1]; history[h + 2] = positions[p + 2];
+      }
+    }
+  }
+
+  function updateTrails() {
+    let output = 0;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const age = ages[i] / MAX_AGE;
+      const brightness = Math.pow(1 - age, 1.5) * Math.min(ages[i] * 5, 1);
+      // Blue throughout the trajectory, with a brighter azure head.
+      const red = 0.025;
+      const green = 0.42 - age * 0.18;
+      for (let sample = 0; sample < TRAIL_LENGTH - 1; sample++) {
+        for (let endpoint = 0; endpoint < 2; endpoint++) {
+          const back = sample + endpoint;
+          const h = (i * TRAIL_LENGTH + (historyHead - back + TRAIL_LENGTH) % TRAIL_LENGTH) * 3;
+          const fade = brightness * (1 - back / (TRAIL_LENGTH - 1));
+          const p = back === 0 ? i * 3 : h;
+          const source = back === 0 ? positions : history;
+          trailVertices[output] = source[p];
+          trailVertices[output + 1] = source[p + 1];
+          trailVertices[output + 2] = source[p + 2];
+          trailColors[output] = red * fade;
+          trailColors[output + 1] = green * fade;
+          trailColors[output + 2] = fade;
+          output += 3;
+        }
+      }
+    }
+    geometry.attributes.position.needsUpdate = true;
+    geometry.attributes.color.needsUpdate = true;
+    headsGeometry.attributes.position.needsUpdate = true;
+  }
+
+  function resize() {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  }
+  addEventListener('resize', resize);
+  resize();
+  let previousTime = performance.now(), accumulator = 0;
+  renderer.setAnimationLoop(now => {
+    const delta = Math.min((now - previousTime) / 1000, 0.05);
+    accumulator += delta;
+    previousTime = now;
+    star.rotation.y += delta * 0.055;
+    star.rotation.z += delta * 0.025;
+    while (accumulator >= FIXED_STEP) { simulate(); accumulator -= FIXED_STEP; }
+    updateLiquidSurface();
+    surface.material.uniforms.liquidTime.value = liquidTime;
+    updateTrails();
+    updateEmbers(delta);
+    controls.update();
+    renderer.render(scene, camera);
+  });
+  status.remove();
+} catch (error) {
+  status.textContent = 'Unable to start. Check your connection to the Three.js CDN and WebGL support.';
+  console.error(error);
+}
+</script>
+</body>
+</html>
